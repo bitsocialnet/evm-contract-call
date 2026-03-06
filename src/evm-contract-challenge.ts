@@ -10,10 +10,12 @@ import type {
   ChallengeResultInput,
   GetChallengeArgsInput,
   HexAddress,
-  PlebbitLike,
+  Plebbit,
   PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest,
   SubplebbitChallengeSetting
 } from "./types.js";
+
+// TODO need to think of how to add custom chain providers to challenge instead of just using the default
 
 const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
   {
@@ -84,7 +86,7 @@ type SupportedConditionOperator =
 
 type ConditionComparable = bigint | string;
 
-interface PlebbitWithOptionalAddressResolver extends PlebbitLike {
+interface PlebbitWithOptionalAddressResolver extends Plebbit {
   getPlebbitAddressFromPublicKey?: (publicKey: string) => Promise<string>;
 }
 
@@ -95,20 +97,18 @@ interface SharedVerifyProps {
   abi: Record<string, unknown>;
   error: string | undefined;
   contractAddress: string;
-  plebbit: PlebbitLike;
+  plebbit: Plebbit;
 }
 
 const publicationFieldNames = [
   "comment",
-  "post",
-  "reply",
   "vote",
   "commentEdit",
   "commentModeration",
   "subplebbitEdit"
 ] as const;
 
-const getChainProviderWithSafety = (plebbit: PlebbitLike, chainTicker: string) => {
+const getChainProviderWithSafety = (plebbit: Plebbit, chainTicker: string) => {
   const chainProvider = plebbit.chainProviders[chainTicker];
   if (!chainProvider) {
     throw new Error("plebbit.chainProviders[chainTicker] is not defined");
@@ -116,7 +116,7 @@ const getChainProviderWithSafety = (plebbit: PlebbitLike, chainTicker: string) =
   return chainProvider;
 };
 
-const getPrimaryRpcUrl = (plebbit: PlebbitLike, chainTicker: string): string => {
+const getPrimaryRpcUrl = (plebbit: Plebbit, chainTicker: string): string => {
   const primaryUrl = getChainProviderWithSafety(plebbit, chainTicker).urls[0];
   if (typeof primaryUrl !== "string") {
     throw new Error("plebbit.chainProviders[chainTicker].urls[0] is not defined");
@@ -152,7 +152,7 @@ const derivePublicationFromChallengeRequest = (
 };
 
 const getPublicationSignerAddress = async (
-  plebbit: PlebbitLike,
+  plebbit: Plebbit,
   publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest
 ): Promise<string> => {
   const maybeResolver = (plebbit as PlebbitWithOptionalAddressResolver)
@@ -199,7 +199,7 @@ const verifyAuthorWalletAddress = async (
   const valid = await viemClient.verifyMessage({
     address: authorWallet.address as HexAddress,
     message: JSON.stringify(messageToBeSigned),
-    signature: authorWallet.signature.signature
+    signature: authorWallet.signature.signature as HexAddress
   });
 
   if (!valid) {
@@ -324,7 +324,7 @@ const verifyAuthorNftWalletAddress = async (
   const valid = await viemClient.verifyMessage({
     address: currentOwner,
     message: JSON.stringify(messageToBeSigned),
-    signature: nftAvatar.signature.signature
+    signature: nftAvatar.signature.signature as HexAddress
   });
 
   if (!valid) {
@@ -349,7 +349,7 @@ const getContractCallResponse = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   authorWalletAddress: string;
-  plebbit: PlebbitLike;
+  plebbit: Plebbit;
 }): Promise<unknown> => {
   const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
     props.chainTicker,
@@ -447,7 +447,7 @@ const validateWalletAddressWithCondition = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   error: string | undefined;
-  plebbit: PlebbitLike;
+  plebbit: Plebbit;
 }): Promise<string | undefined> => {
   let contractCallResponse: unknown;
   try {

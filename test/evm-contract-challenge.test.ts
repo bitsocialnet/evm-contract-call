@@ -7,16 +7,22 @@ import {
 } from "viem/accounts";
 import evmContractChallenge from "../src/evm-contract-challenge.js";
 import type {
-  AuthorAvatar,
-  AuthorWallet,
   ChallengeResultInput,
+  GetChallengeArgsInput,
   HexAddress,
-  PlebbitLike,
   PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest,
-  SubplebbitChallengeSetting,
-  SubplebbitLike,
-  ViemClientLike
+  SubplebbitChallengeSetting
 } from "../src/types.js";
+
+type AuthorWallet = NonNullable<NonNullable<PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest["author"]["wallets"]>[string]>;
+type AuthorAvatar = NonNullable<PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest["author"]["avatar"]>;
+
+interface MockViemClient {
+  verifyMessage: (args: { address: HexAddress; message: string; signature: HexAddress }) => Promise<boolean>;
+  call: (args: { data: HexAddress; to: HexAddress }) => Promise<{ data?: HexAddress }>;
+  getEnsAddress?: (args: { name: string }) => Promise<HexAddress | null | undefined>;
+  readContract?: (args: { abi: readonly unknown[]; address: HexAddress; functionName: string; args: readonly unknown[] }) => Promise<unknown>;
+}
 
 const CONTRACT_ADDRESS =
   "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f" as const;
@@ -54,8 +60,8 @@ const createChallengeSettings = (
   }
 });
 
-const createClient = (overrides: Partial<ViemClientLike> = {}): ViemClientLike => {
-  const client: ViemClientLike = {
+const createClient = (overrides: Partial<MockViemClient> = {}): MockViemClient => {
+  const client: MockViemClient = {
     verifyMessage: overrides.verifyMessage ?? (async () => false),
     call: overrides.call ?? (async () => ({ data: ZERO_BALANCE_DATA }))
   };
@@ -71,18 +77,18 @@ const createClient = (overrides: Partial<ViemClientLike> = {}): ViemClientLike =
 };
 
 const createSubplebbit = (params: {
-  ethClient: ViemClientLike;
-  maticClient?: ViemClientLike;
-  resolveAuthorAddress?: PlebbitLike["resolveAuthorAddress"];
-}): SubplebbitLike => {
+  ethClient: MockViemClient;
+  maticClient?: MockViemClient;
+  resolveAuthorAddress?: (args: { address: string }) => Promise<string | null>;
+}) => {
   const storage = new Map<string, unknown>();
 
-  const clients: Record<string, ViemClientLike> = {
+  const clients: Record<string, MockViemClient> = {
     eth: params.ethClient,
     matic: params.maticClient ?? createClient()
   };
 
-  const plebbit: PlebbitLike = {
+  const plebbit = {
     chainProviders: {
       eth: { urls: ["https://eth.example"], chainId: 1 },
       matic: { urls: ["https://matic.example"], chainId: 137 }
@@ -122,8 +128,8 @@ const createPublication = (params: {
       ...(params.wallet ? { wallets: { eth: params.wallet } } : {}),
       ...(params.avatar ? { avatar: params.avatar } : {})
     },
-    signature: { publicKey: "mock-public-key" }
-  };
+    signature: { type: "ed25519", signature: "", publicKey: "mock-public-key", signedPropertyNames: [] }
+  } as unknown as PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
 };
 
 const createWalletMessage = (authorAddress: string, timestamp: number): string => {
@@ -192,8 +198,8 @@ const signAvatarProof = async (params: {
 const executeChallenge = async (params: {
   publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
   settings?: SubplebbitChallengeSetting;
-  ethClient: ViemClientLike;
-  maticClient?: ViemClientLike;
+  ethClient: MockViemClient;
+  maticClient?: MockViemClient;
 }): Promise<ChallengeResultInput> => {
   const settings = params.settings ?? createChallengeSettings();
   const subplebbit = createSubplebbit({
@@ -204,9 +210,9 @@ const executeChallenge = async (params: {
   const challengeFile = evmContractChallenge({ challengeSettings: settings });
   const result = await challengeFile.getChallenge({
     challengeSettings: settings,
-    challengeRequestMessage: { comment: params.publication },
+    challengeRequestMessage: { comment: params.publication } as unknown as GetChallengeArgsInput["challengeRequestMessage"],
     challengeIndex: 0,
-    subplebbit
+    subplebbit: subplebbit as unknown as GetChallengeArgsInput["subplebbit"]
   });
 
   if (!("success" in result)) {
@@ -247,7 +253,7 @@ describe("evmContractChallenge", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe(
+    expect((result as { error?: string }).error).toBe(
       "Author (author-address) has failed all EVM challenges, " +
         "walletFailureReason='PLEB token balance must be greater than 1000.', " +
         "ensAuthorAddressFailureReason='Author address is not a .bso/.eth domain', " +
@@ -305,7 +311,7 @@ describe("evmContractChallenge", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe(
+    expect((result as { error?: string }).error).toBe(
       "Author (author-address) has failed all EVM challenges, " +
         "walletFailureReason='PLEB token balance must be greater than 1000.', " +
         "ensAuthorAddressFailureReason='Author address is not a .bso/.eth domain', " +
@@ -330,7 +336,7 @@ describe("evmContractChallenge", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe(
+    expect((result as { error?: string }).error).toBe(
       "Author (author-address) has failed all EVM challenges, " +
         "walletFailureReason='The signature of the wallet is invalid', " +
         "ensAuthorAddressFailureReason='Author address is not a .bso/.eth domain', " +
@@ -361,7 +367,7 @@ describe("evmContractChallenge", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe(
+    expect((result as { error?: string }).error).toBe(
       "Author (author-address) has failed all EVM challenges, " +
         "walletFailureReason='The author wallet address is not defined', " +
         "ensAuthorAddressFailureReason='Author address is not a .bso/.eth domain', " +

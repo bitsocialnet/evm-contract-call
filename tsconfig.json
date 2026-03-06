@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "lib": ["ES2022"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -12,7 +12,14 @@
     "resolveJsonModule": true,
     "esModuleInterop": false,
     "allowSyntheticDefaultImports": false,
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@plebbit/plebbit-js/dist/node/subplebbit/types": ["./node_modules/@plebbit/plebbit-js/dist/node/subplebbit/types"],
+      "@plebbit/plebbit-js/dist/node/pubsub-messages/types": ["./node_modules/@plebbit/plebbit-js/dist/node/pubsub-messages/types"],
+      "@plebbit/plebbit-js/dist/node/types": ["./node_modules/@plebbit/plebbit-js/dist/node/types"],
+      "@plebbit/plebbit-js/dist/node/plebbit/plebbit": ["./node_modules/@plebbit/plebbit-js/dist/node/plebbit/plebbit"],
+      "@plebbit/plebbit-js/dist/node/runtime/node/subplebbit/local-subplebbit": ["./node_modules/@plebbit/plebbit-js/dist/node/runtime/node/subplebbit/local-subplebbit"]
+    }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
   "exclude": ["dist", "node_modules"]

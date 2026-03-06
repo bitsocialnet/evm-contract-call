@@ -32,23 +32,16 @@
     "evm",
     "viem"
   ],
-  "author": "Bitsocial",
+  "author": "Rinse",
   "license": "MIT",
   "engines": {
     "node": ">=22.0.0"
-  },
-  "peerDependencies": {
-    "@plebbit/plebbit-js": ">=0.0.3"
-  },
-  "peerDependenciesMeta": {
-    "@plebbit/plebbit-js": {
-      "optional": true
-    }
   },
   "dependencies": {
     "viem": "2.47.0"
   },
   "devDependencies": {
+    "@plebbit/plebbit-js": "file:../plebbit-js",
     "@types/node": "25.3.5",
     "typescript": "5.9.3",
     "vitest": "4.0.18"
