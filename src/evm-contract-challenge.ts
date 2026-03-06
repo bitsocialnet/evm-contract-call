@@ -1,0 +1,557 @@
+import {
+  decodeFunctionResult,
+  encodeFunctionData,
+  type AbiFunction
+} from "viem";
+import { normalize } from "viem/ens";
+import type {
+  ChallengeFileInput,
+  ChallengeInput,
+  ChallengeResultInput,
+  GetChallengeArgsInput,
+  HexAddress,
+  PlebbitLike,
+  PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest,
+  SubplebbitChallengeSetting
+} from "./types.js";
+
+const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
+  {
+    option: "chainTicker",
+    label: "chainTicker",
+    default: "eth",
+    description: "The chain ticker",
+    placeholder: "eth",
+    required: true
+  },
+  {
+    option: "address",
+    label: "Address",
+    default: "",
+    description: "The contract address.",
+    placeholder: "0x...",
+    required: true
+  },
+  {
+    option: "abi",
+    label: "ABI",
+    default: "",
+    description: "The ABI of the contract method.",
+    placeholder:
+      '{"constant":true,"inputs":[{"internalType":"address","name":"account...',
+    required: true
+  },
+  {
+    option: "condition",
+    label: "Condition",
+    default: "",
+    description: "The condition the contract call response must pass.",
+    placeholder: ">1000",
+    required: true
+  },
+  {
+    option: "error",
+    label: "Error",
+    default: "Contract call response doesn't pass condition.",
+    description: "The error to display to the author."
+  }
+];
+
+const description =
+  "The response from an EVM contract call passes a condition, e.g. a token balance challenge.";
+
+const nftAbi: readonly unknown[] = [
+  {
+    inputs: [{ internalType: "uint256", name: "tokenId", type: "uint256" }],
+    name: "tokenURI",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function"
+  },
+  {
+    inputs: [{ internalType: "uint256", name: "tokenId", type: "uint256" }],
+    name: "ownerOf",
+    outputs: [{ internalType: "address", name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function"
+  }
+];
+
+const supportedConditionOperators = ["=", ">", "<"] as const;
+
+type SupportedConditionOperator =
+  (typeof supportedConditionOperators)[number];
+
+type ConditionComparable = bigint | string;
+
+interface PlebbitWithOptionalAddressResolver extends PlebbitLike {
+  getPlebbitAddressFromPublicKey?: (publicKey: string) => Promise<string>;
+}
+
+interface SharedVerifyProps {
+  publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
+  chainTicker: string;
+  condition: string;
+  abi: Record<string, unknown>;
+  error: string | undefined;
+  contractAddress: string;
+  plebbit: PlebbitLike;
+}
+
+const publicationFieldNames = [
+  "comment",
+  "post",
+  "reply",
+  "vote",
+  "commentEdit",
+  "commentModeration",
+  "subplebbitEdit"
+] as const;
+
+const getChainProviderWithSafety = (plebbit: PlebbitLike, chainTicker: string) => {
+  const chainProvider = plebbit.chainProviders[chainTicker];
+  if (!chainProvider) {
+    throw new Error("plebbit.chainProviders[chainTicker] is not defined");
+  }
+  return chainProvider;
+};
+
+const getPrimaryRpcUrl = (plebbit: PlebbitLike, chainTicker: string): string => {
+  const primaryUrl = getChainProviderWithSafety(plebbit, chainTicker).urls[0];
+  if (typeof primaryUrl !== "string") {
+    throw new Error("plebbit.chainProviders[chainTicker].urls[0] is not defined");
+  }
+  return primaryUrl;
+};
+
+const isStringDomain = (value: string | undefined): value is string =>
+  typeof value === "string" && value.includes(".");
+
+const isEthAliasDomain = (address: string): boolean => {
+  const lowerAddress = address.toLowerCase();
+  return lowerAddress.endsWith(".eth") || lowerAddress.endsWith(".bso");
+};
+
+const normalizeEthAliasDomain = (address: string): string => {
+  return address.toLowerCase().endsWith(".bso")
+    ? `${address.slice(0, -4)}.eth`
+    : address;
+};
+
+const derivePublicationFromChallengeRequest = (
+  challengeRequestMessage: GetChallengeArgsInput["challengeRequestMessage"]
+): PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest => {
+  for (const fieldName of publicationFieldNames) {
+    const publication = challengeRequestMessage[fieldName];
+    if (publication) {
+      return publication;
+    }
+  }
+
+  throw new Error("Failed to find publication on ChallengeRequest");
+};
+
+const getPublicationSignerAddress = async (
+  plebbit: PlebbitLike,
+  publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest
+): Promise<string> => {
+  const maybeResolver = (plebbit as PlebbitWithOptionalAddressResolver)
+    .getPlebbitAddressFromPublicKey;
+  if (typeof maybeResolver === "function") {
+    return maybeResolver(publication.signature.publicKey);
+  }
+
+  return publication.author.address;
+};
+
+const verifyAuthorWalletAddress = async (
+  props: SharedVerifyProps
+): Promise<string | undefined> => {
+  const authorWallet = props.publication.author.wallets?.[props.chainTicker];
+  if (typeof authorWallet?.address !== "string") {
+    return "The author wallet address is not defined";
+  }
+
+  if (isStringDomain(authorWallet.address)) {
+    const resolvedWalletAddress = await props.plebbit.resolveAuthorAddress({
+      address: authorWallet.address
+    });
+    const publicationSignatureAddress = await getPublicationSignerAddress(
+      props.plebbit,
+      props.publication
+    );
+
+    if (resolvedWalletAddress !== publicationSignatureAddress) {
+      return "The author wallet address's plebbit-author-address text record should resolve to the public key of the signature";
+    }
+  }
+
+  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
+    "eth",
+    getPrimaryRpcUrl(props.plebbit, "eth")
+  );
+
+  const messageToBeSigned: Record<string, string | number> = {};
+  messageToBeSigned.domainSeparator = "plebbit-author-wallet";
+  messageToBeSigned.authorAddress = props.publication.author.address;
+  messageToBeSigned.timestamp = authorWallet.timestamp;
+
+  const valid = await viemClient.verifyMessage({
+    address: authorWallet.address as HexAddress,
+    message: JSON.stringify(messageToBeSigned),
+    signature: authorWallet.signature.signature
+  });
+
+  if (!valid) {
+    return "The signature of the wallet is invalid";
+  }
+
+  const cache = await props.plebbit._createStorageLRU({
+    cacheName: "challenge_evm_contract_call_v1_wallet_last_timestamp",
+    maxItems: Number.MAX_SAFE_INTEGER
+  });
+
+  const cacheKey = props.chainTicker + authorWallet.address;
+  const lastTimestampRaw = await cache.getItem(cacheKey);
+  const lastTimestampOfAuthor =
+    typeof lastTimestampRaw === "number" ? lastTimestampRaw : undefined;
+
+  if (
+    typeof lastTimestampOfAuthor === "number" &&
+    lastTimestampOfAuthor > authorWallet.timestamp
+  ) {
+    return "The author is trying to use an old wallet signature";
+  }
+
+  if ((lastTimestampOfAuthor ?? 0) < authorWallet.timestamp) {
+    await cache.setItem(cacheKey, authorWallet.timestamp);
+  }
+
+  const walletValidationFailure = await validateWalletAddressWithCondition({
+    authorWalletAddress: authorWallet.address,
+    condition: props.condition,
+    plebbit: props.plebbit,
+    contractAddress: props.contractAddress,
+    chainTicker: props.chainTicker,
+    abi: props.abi,
+    error: props.error
+  });
+
+  return walletValidationFailure;
+};
+
+const verifyAuthorENSAddress = async (
+  props: SharedVerifyProps
+): Promise<string | undefined> => {
+  const authorAddress = props.publication.author.address;
+  if (!isEthAliasDomain(authorAddress)) {
+    return "Author address is not a .bso/.eth domain";
+  }
+
+  const ensAddress = normalizeEthAliasDomain(authorAddress);
+
+  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
+    "eth",
+    getPrimaryRpcUrl(props.plebbit, "eth")
+  );
+
+  if (typeof viemClient.getEnsAddress !== "function") {
+    throw new Error("Failed to get owner of ENS address of author.address");
+  }
+
+  const ownerOfAddress = await viemClient.getEnsAddress({
+    name: normalize(ensAddress)
+  });
+
+  if (!ownerOfAddress) {
+    throw new Error("Failed to get owner of ENS address of author.address");
+  }
+
+  const walletValidationFailure = await validateWalletAddressWithCondition({
+    authorWalletAddress: ownerOfAddress,
+    condition: props.condition,
+    plebbit: props.plebbit,
+    contractAddress: props.contractAddress,
+    chainTicker: props.chainTicker,
+    abi: props.abi,
+    error: props.error
+  });
+
+  return walletValidationFailure;
+};
+
+const verifyAuthorNftWalletAddress = async (
+  props: SharedVerifyProps
+): Promise<string | undefined> => {
+  if (!props.publication.author.avatar) {
+    return "Author has no avatar NFT set";
+  }
+
+  const nftAvatar = props.publication.author.avatar;
+  const chainProvider = props.plebbit.chainProviders[nftAvatar.chainTicker];
+  if (!chainProvider) {
+    return "The subplebbit does not support NFTs from this chain";
+  }
+
+  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
+    nftAvatar.chainTicker,
+    getPrimaryRpcUrl(props.plebbit, nftAvatar.chainTicker)
+  );
+
+  let currentOwner: HexAddress;
+  try {
+    if (typeof viemClient.readContract !== "function") {
+      throw new Error("Viem readContract unavailable");
+    }
+
+    currentOwner = (await viemClient.readContract({
+      abi: nftAbi,
+      address: nftAvatar.address as HexAddress,
+      functionName: "ownerOf",
+      args: [nftAvatar.id]
+    })) as HexAddress;
+  } catch {
+    return "Failed to read NFT contract";
+  }
+
+  const messageToBeSigned: Record<string, string | number> = {};
+  messageToBeSigned.domainSeparator = "plebbit-author-avatar";
+  messageToBeSigned.authorAddress = props.publication.author.address;
+  messageToBeSigned.timestamp = nftAvatar.timestamp;
+  messageToBeSigned.tokenAddress = nftAvatar.address;
+  messageToBeSigned.tokenId = String(nftAvatar.id);
+
+  const valid = await viemClient.verifyMessage({
+    address: currentOwner,
+    message: JSON.stringify(messageToBeSigned),
+    signature: nftAvatar.signature.signature
+  });
+
+  if (!valid) {
+    return "The signature of the nft avatar is invalid";
+  }
+
+  const nftWalletValidationFailure = await validateWalletAddressWithCondition({
+    authorWalletAddress: currentOwner,
+    condition: props.condition,
+    plebbit: props.plebbit,
+    contractAddress: props.contractAddress,
+    chainTicker: props.chainTicker,
+    abi: props.abi,
+    error: props.error
+  });
+
+  return nftWalletValidationFailure;
+};
+
+const getContractCallResponse = async (props: {
+  chainTicker: string;
+  contractAddress: string;
+  abi: Record<string, unknown>;
+  authorWalletAddress: string;
+  plebbit: PlebbitLike;
+}): Promise<unknown> => {
+  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
+    props.chainTicker,
+    getPrimaryRpcUrl(props.plebbit, props.chainTicker)
+  );
+
+  const encodedParameters = encodeFunctionData({
+    abi: [props.abi as AbiFunction],
+    args: [props.authorWalletAddress as HexAddress]
+  } as never);
+
+  const encodedData = await viemClient.call({
+    data: encodedParameters,
+    to: props.contractAddress as HexAddress
+  });
+
+  if (!encodedData.data) {
+    throw new Error("The call did not return with data");
+  }
+
+  const decodedData = decodeFunctionResult({
+    abi: [props.abi as AbiFunction],
+    data: encodedData.data
+  } as never);
+
+  return decodedData;
+};
+
+const parseCondition = (condition: string): {
+  operator: SupportedConditionOperator;
+  value: string;
+} => {
+  const operatorInCondition = supportedConditionOperators.find((operator) =>
+    condition.startsWith(operator)
+  );
+
+  if (!operatorInCondition) {
+    throw new Error(
+      "Incorrect condition is set, make sure the condition operator is supported"
+    );
+  }
+
+  const valueInCondition = condition.split(operatorInCondition)[1] ?? "";
+  return {
+    operator: operatorInCondition,
+    value: valueInCondition
+  };
+};
+
+const toComparableValue = (
+  value: unknown,
+  numeric: boolean
+): ConditionComparable => {
+  if (numeric) {
+    return BigInt(value as string | number | bigint);
+  }
+
+  return String(value);
+};
+
+const evaluateConditionString = (
+  condition: string,
+  responseValue: unknown
+): boolean => {
+  const parsedCondition = parseCondition(condition);
+
+  const isNumericCondition = /^\d+$/.test(parsedCondition.value);
+  const conditionValueParsed = toComparableValue(
+    parsedCondition.value,
+    isNumericCondition
+  );
+  const responseValueParsed = toComparableValue(responseValue, isNumericCondition);
+
+  if (typeof conditionValueParsed !== typeof responseValueParsed) {
+    throw new Error("value of condition and response should be the same");
+  }
+
+  if (parsedCondition.operator === "=") {
+    return responseValueParsed === conditionValueParsed;
+  }
+  if (parsedCondition.operator === ">") {
+    return responseValueParsed > conditionValueParsed;
+  }
+  if (parsedCondition.operator === "<") {
+    return responseValueParsed < conditionValueParsed;
+  }
+
+  throw new Error("Failed to parse condition. Please double check code and set condition");
+};
+
+const validateWalletAddressWithCondition = async (props: {
+  authorWalletAddress: string;
+  condition: string;
+  chainTicker: string;
+  contractAddress: string;
+  abi: Record<string, unknown>;
+  error: string | undefined;
+  plebbit: PlebbitLike;
+}): Promise<string | undefined> => {
+  let contractCallResponse: unknown;
+  try {
+    contractCallResponse = await getContractCallResponse({
+      chainTicker: props.chainTicker,
+      contractAddress: props.contractAddress,
+      abi: props.abi,
+      authorWalletAddress: props.authorWalletAddress,
+      plebbit: props.plebbit
+    });
+  } catch {
+    return "Failed getting contract call response from blockchain.";
+  }
+
+  if (!evaluateConditionString(props.condition, contractCallResponse)) {
+    return props.error || "Contract call response doesn't pass condition.";
+  }
+
+  return undefined;
+};
+
+const parseChallengeAbi = (abi: string): Record<string, unknown> => {
+  const parsed = JSON.parse(abi) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("option abi must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+};
+
+const getChallenge = async ({
+  challengeSettings,
+  challengeRequestMessage,
+  subplebbit
+}: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
+  let { chainTicker, address, abi, condition, error } =
+    challengeSettings?.options || {};
+
+  if (!chainTicker) {
+    throw new Error("missing option chainTicker");
+  }
+  if (!address) {
+    throw new Error("missing option address");
+  }
+  if (!abi) {
+    throw new Error("missing option abi");
+  }
+  if (!condition) {
+    throw new Error("missing option condition");
+  }
+
+  const doesConditionStartWithSupportedOperator =
+    supportedConditionOperators.find((operator) => condition.startsWith(operator));
+  if (!doesConditionStartWithSupportedOperator) {
+    throw new Error("Condition uses unsupported comparison operator");
+  }
+
+  const parsedAbi = parseChallengeAbi(abi);
+  const publication = derivePublicationFromChallengeRequest(challengeRequestMessage);
+
+  const sharedProps: SharedVerifyProps = {
+    plebbit: subplebbit._plebbit,
+    abi: parsedAbi,
+    condition,
+    error,
+    chainTicker,
+    publication,
+    contractAddress: address
+  };
+
+  const walletFailureReason = await verifyAuthorWalletAddress(sharedProps);
+  if (!walletFailureReason) {
+    return { success: true };
+  }
+
+  const ensAuthorAddressFailureReason = await verifyAuthorENSAddress(sharedProps);
+  if (!ensAuthorAddressFailureReason) {
+    return { success: true };
+  }
+
+  const nftWalletAddressFailureReason = await verifyAuthorNftWalletAddress(
+    sharedProps
+  );
+  if (!nftWalletAddressFailureReason) {
+    return { success: true };
+  }
+
+  const errorString =
+    `Author (${publication.author.address}) has failed all EVM challenges, ` +
+    `walletFailureReason='${walletFailureReason}', ` +
+    `ensAuthorAddressFailureReason='${ensAuthorAddressFailureReason}', ` +
+    `nftWalletAddressFailureReason='${nftWalletAddressFailureReason}'`;
+
+  return { success: false, error: errorString };
+};
+
+function evmContractChallenge({
+  challengeSettings
+}: {
+  challengeSettings: SubplebbitChallengeSetting;
+}): ChallengeFileInput {
+  const chainTicker = challengeSettings?.options?.chainTicker;
+  const type = `chain/${chainTicker || "eth"}` as ChallengeInput["type"];
+  return { getChallenge, optionInputs, type, description };
+}
+
+export { description, optionInputs };
+export default evmContractChallenge;
