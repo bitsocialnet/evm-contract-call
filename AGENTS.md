@@ -11,3 +11,7 @@ Migration note:
 
 - Current compatibility target: `@plebbit/plebbit-js`
 - Planned migration target: `@pkc/pkc-js`
+
+Workflow:
+
+- Before every commit, run `npm run typecheck` and ensure it passes with no errors.
