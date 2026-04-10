@@ -1,6 +1,6 @@
 {
   "name": "@bitsocial/evm-contract-challenge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone EVM contract call challenge for pkc-js",
   "type": "module",
   "main": "./dist/index.js",
