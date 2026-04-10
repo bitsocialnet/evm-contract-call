@@ -5,7 +5,7 @@ Standalone EVM contract call challenge extracted from `plebbit-js`, packaged wit
 ## Status
 
 - Runtime peer dependency is currently `@plebbit/plebbit-js`.
-- This package is expected to migrate to `@pkc/pkc-js` soon.
+- This package is expected to migrate to `@pkcprotocol/pkc-js` soon.
 
 ## Requirements
 
