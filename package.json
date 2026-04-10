@@ -35,7 +35,7 @@
     "viem"
   ],
   "author": "Rinse",
-  "license": "GPL-3.0-only",
+  "license": "GPL-3.0-or-later",
   "engines": {
     "node": ">=22.0.0"
   },
