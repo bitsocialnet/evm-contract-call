@@ -3,18 +3,16 @@ export type {
   ChallengeInput,
   ChallengeResultInput,
   GetChallengeArgsInput,
-  SubplebbitChallengeSetting,
-  ChallengeFileFactoryInput,
-  ChallengeFileFactoryArgs
-} from "@plebbit/plebbit-js/dist/node/subplebbit/types";
+  CommunityChallengeSetting
+} from "@pkcprotocol/pkc-js/challenges";
 
-export type {
-  DecryptedChallengeRequestMessageTypeWithSubplebbitAuthor,
-  PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest
-} from "@plebbit/plebbit-js/dist/node/pubsub-messages/types";
+import type { GetChallengeArgsInput } from "@pkcprotocol/pkc-js/challenges";
 
-export type { Plebbit } from "@plebbit/plebbit-js/dist/node/plebbit/plebbit";
-export type { LocalSubplebbit } from "@plebbit/plebbit-js/dist/node/runtime/node/subplebbit/local-subplebbit";
-export type { ChainProvider, LRUStorageInterface } from "@plebbit/plebbit-js/dist/node/types";
+export type LocalCommunity = GetChallengeArgsInput["community"];
+export type PKC = LocalCommunity["_pkc"];
+
+type ChallengeRequestMessage = GetChallengeArgsInput["challengeRequestMessage"];
+export type PublicationWithCommunityAuthorFromDecryptedChallengeRequest =
+  NonNullable<ChallengeRequestMessage["vote"] | ChallengeRequestMessage["comment"] | ChallengeRequestMessage["commentEdit"] | ChallengeRequestMessage["commentModeration"] | ChallengeRequestMessage["communityEdit"]>;
 
 export type HexAddress = `0x${string}`;

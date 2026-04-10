@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyMessage } from "viem";
 import {
   generatePrivateKey,
@@ -10,12 +10,12 @@ import type {
   ChallengeResultInput,
   GetChallengeArgsInput,
   HexAddress,
-  PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest,
-  SubplebbitChallengeSetting
+  PublicationWithCommunityAuthorFromDecryptedChallengeRequest,
+  CommunityChallengeSetting
 } from "../src/types.js";
 
-type AuthorWallet = NonNullable<NonNullable<PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest["author"]["wallets"]>[string]>;
-type AuthorAvatar = NonNullable<PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest["author"]["avatar"]>;
+type AuthorWallet = NonNullable<NonNullable<PublicationWithCommunityAuthorFromDecryptedChallengeRequest["author"]["wallets"]>[string]>;
+type AuthorAvatar = NonNullable<PublicationWithCommunityAuthorFromDecryptedChallengeRequest["author"]["avatar"]>;
 
 interface MockViemClient {
   verifyMessage: (args: { address: HexAddress; message: string; signature: HexAddress }) => Promise<boolean>;
@@ -23,6 +23,16 @@ interface MockViemClient {
   getEnsAddress?: (args: { name: string }) => Promise<HexAddress | null | undefined>;
   readContract?: (args: { abi: readonly unknown[]; address: HexAddress; functionName: string; args: readonly unknown[] }) => Promise<unknown>;
 }
+
+vi.mock("viem", async () => {
+  const actual = await vi.importActual<typeof import("viem")>("viem");
+  return {
+    ...actual,
+    createPublicClient: () => currentMockClient
+  };
+});
+
+let currentMockClient: MockViemClient;
 
 const CONTRACT_ADDRESS =
   "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f" as const;
@@ -35,9 +45,11 @@ const HIGH_BALANCE_DATA =
 const ZERO_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as HexAddress;
 const DEFAULT_AUTHOR_ADDRESS = "author-address";
+const DEFAULT_RPC_URL = "https://eth.example";
 
 const DEFAULT_OPTIONS = {
   chainTicker: "eth",
+  rpcUrl: DEFAULT_RPC_URL,
   address: CONTRACT_ADDRESS,
   abi: BALANCE_ABI_JSON,
   condition: ">1000",
@@ -50,9 +62,14 @@ beforeAll(() => {
   account = privateKeyToAccount(generatePrivateKey());
 });
 
+beforeEach(() => {
+  // Clear the viem client cache between tests by resetting the mock module
+  vi.resetModules;
+});
+
 const createChallengeSettings = (
   overrides: Partial<typeof DEFAULT_OPTIONS> = {}
-): SubplebbitChallengeSetting => ({
+): CommunityChallengeSetting => ({
   name: "evm-contract-call",
   options: {
     ...DEFAULT_OPTIONS,
@@ -76,34 +93,14 @@ const createClient = (overrides: Partial<MockViemClient> = {}): MockViemClient =
   return client;
 };
 
-const createSubplebbit = (params: {
-  ethClient: MockViemClient;
-  maticClient?: MockViemClient;
-  resolveAuthorAddress?: (args: { address: string }) => Promise<string | null>;
-}) => {
+const createCommunity = (params: {
+  resolveAuthorName?: (args: { address: string }) => Promise<string | null>;
+} = {}) => {
   const storage = new Map<string, unknown>();
 
-  const clients: Record<string, MockViemClient> = {
-    eth: params.ethClient,
-    matic: params.maticClient ?? createClient()
-  };
-
-  const plebbit = {
-    chainProviders: {
-      eth: { urls: ["https://eth.example"], chainId: 1 },
-      matic: { urls: ["https://matic.example"], chainId: 137 }
-    },
-    _domainResolver: {
-      _createViemClientIfNeeded: (chainTicker: string) => {
-        const client = clients[chainTicker];
-        if (!client) {
-          throw new Error(`No viem client for chain ${chainTicker}`);
-        }
-        return client;
-      }
-    },
-    resolveAuthorAddress:
-      params.resolveAuthorAddress ?? (async ({ address }) => address),
+  const pkc = {
+    resolveAuthorName:
+      params.resolveAuthorName ?? (async ({ address }: { address: string }) => address),
     _createStorageLRU: async () => ({
       getItem: async (key: string) => storage.get(key),
       setItem: async (key: string, value: unknown) => {
@@ -112,14 +109,14 @@ const createSubplebbit = (params: {
     })
   };
 
-  return { _plebbit: plebbit };
+  return { _pkc: pkc };
 };
 
 const createPublication = (params: {
   authorAddress?: string;
   wallet?: AuthorWallet;
   avatar?: AuthorAvatar;
-}): PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest => {
+}): PublicationWithCommunityAuthorFromDecryptedChallengeRequest => {
   const authorAddress = params.authorAddress ?? DEFAULT_AUTHOR_ADDRESS;
 
   return {
@@ -129,7 +126,7 @@ const createPublication = (params: {
       ...(params.avatar ? { avatar: params.avatar } : {})
     },
     signature: { type: "ed25519", signature: "", publicKey: "mock-public-key", signedPropertyNames: [] }
-  } as unknown as PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
+  } as unknown as PublicationWithCommunityAuthorFromDecryptedChallengeRequest;
 };
 
 const createWalletMessage = (authorAddress: string, timestamp: number): string => {
@@ -196,23 +193,21 @@ const signAvatarProof = async (params: {
 };
 
 const executeChallenge = async (params: {
-  publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
-  settings?: SubplebbitChallengeSetting;
-  ethClient: MockViemClient;
-  maticClient?: MockViemClient;
+  publication: PublicationWithCommunityAuthorFromDecryptedChallengeRequest;
+  settings?: CommunityChallengeSetting;
+  mockClient: MockViemClient;
 }): Promise<ChallengeResultInput> => {
   const settings = params.settings ?? createChallengeSettings();
-  const subplebbit = createSubplebbit({
-    ethClient: params.ethClient,
-    ...(params.maticClient ? { maticClient: params.maticClient } : {})
-  });
+  const community = createCommunity();
+
+  currentMockClient = params.mockClient;
 
   const challengeFile = evmContractChallenge({ challengeSettings: settings });
   const result = await challengeFile.getChallenge({
     challengeSettings: settings,
     challengeRequestMessage: { comment: params.publication } as unknown as GetChallengeArgsInput["challengeRequestMessage"],
     challengeIndex: 0,
-    subplebbit: subplebbit as unknown as GetChallengeArgsInput["subplebbit"]
+    community: community as unknown as GetChallengeArgsInput["community"]
   });
 
   if (!("success" in result)) {
@@ -226,14 +221,14 @@ describe("evmContractChallenge", () => {
   it("passes when wallet balance is over threshold", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       call: async () => ({ data: HIGH_BALANCE_DATA })
     });
 
     const result = await executeChallenge({
       publication: createPublication({ wallet }),
-      ethClient
+      mockClient
     });
 
     expect(result).toEqual({ success: true });
@@ -242,14 +237,14 @@ describe("evmContractChallenge", () => {
   it("fails when wallet balance is below threshold and no ENS/NFT fallback", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       call: async () => ({ data: ZERO_BALANCE_DATA })
     });
 
     const result = await executeChallenge({
       publication: createPublication({ wallet }),
-      ethClient
+      mockClient
     });
 
     expect(result.success).toBe(false);
@@ -266,8 +261,9 @@ describe("evmContractChallenge", () => {
     const avatar = await signAvatarProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
     let callCount = 0;
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
+      readContract: async () => account.address,
       call: async () => {
         callCount += 1;
         return {
@@ -276,15 +272,9 @@ describe("evmContractChallenge", () => {
       }
     });
 
-    const maticClient = createClient({
-      verifyMessage,
-      readContract: async () => account.address
-    });
-
     const result = await executeChallenge({
       publication: createPublication({ wallet, avatar }),
-      ethClient,
-      maticClient
+      mockClient
     });
 
     expect(result).toEqual({ success: true });
@@ -294,20 +284,15 @@ describe("evmContractChallenge", () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
     const avatar = await signAvatarProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
+      readContract: async () => account.address,
       call: async () => ({ data: ZERO_BALANCE_DATA })
-    });
-
-    const maticClient = createClient({
-      verifyMessage,
-      readContract: async () => account.address
     });
 
     const result = await executeChallenge({
       publication: createPublication({ wallet, avatar }),
-      ethClient,
-      maticClient
+      mockClient
     });
 
     expect(result.success).toBe(false);
@@ -325,14 +310,14 @@ describe("evmContractChallenge", () => {
       corrupted: true
     });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       call: async () => ({ data: ZERO_BALANCE_DATA })
     });
 
     const result = await executeChallenge({
       publication: createPublication({ wallet }),
-      ethClient
+      mockClient
     });
 
     expect(result.success).toBe(false);
@@ -350,20 +335,15 @@ describe("evmContractChallenge", () => {
       corrupted: true
     });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
+      readContract: async () => account.address,
       call: async () => ({ data: ZERO_BALANCE_DATA })
-    });
-
-    const maticClient = createClient({
-      verifyMessage,
-      readContract: async () => account.address
     });
 
     const result = await executeChallenge({
       publication: createPublication({ avatar }),
-      ethClient,
-      maticClient
+      mockClient
     });
 
     expect(result.success).toBe(false);
@@ -376,7 +356,7 @@ describe("evmContractChallenge", () => {
   });
 
   it("passes for .eth author address when ENS owner wallet passes condition", async () => {
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       getEnsAddress: async () => account.address,
       call: async () => ({ data: HIGH_BALANCE_DATA })
@@ -384,14 +364,14 @@ describe("evmContractChallenge", () => {
 
     const result = await executeChallenge({
       publication: createPublication({ authorAddress: "plebbit.eth" }),
-      ethClient
+      mockClient
     });
 
     expect(result).toEqual({ success: true });
   });
 
   it("passes for .bso author address when ENS owner wallet passes condition", async () => {
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       getEnsAddress: async () => account.address,
       call: async () => ({ data: HIGH_BALANCE_DATA })
@@ -399,14 +379,14 @@ describe("evmContractChallenge", () => {
 
     const result = await executeChallenge({
       publication: createPublication({ authorAddress: "plebbit.bso" }),
-      ethClient
+      mockClient
     });
 
     expect(result).toEqual({ success: true });
   });
 
   it("throws for missing required options", async () => {
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       call: async () => ({ data: HIGH_BALANCE_DATA })
     });
@@ -417,6 +397,7 @@ describe("evmContractChallenge", () => {
 
     const missingCases: Array<{ key: string; expectedError: string }> = [
       { key: "chainTicker", expectedError: "missing option chainTicker" },
+      { key: "rpcUrl", expectedError: "missing option rpcUrl" },
       { key: "address", expectedError: "missing option address" },
       { key: "abi", expectedError: "missing option abi" },
       { key: "condition", expectedError: "missing option condition" }
@@ -427,7 +408,7 @@ describe("evmContractChallenge", () => {
         ([key]) => key !== missingCase.key
       );
       const options = Object.fromEntries(entries) as Record<string, string>;
-      const settings: SubplebbitChallengeSetting = {
+      const settings: CommunityChallengeSetting = {
         name: "evm-contract-call",
         options
       };
@@ -435,7 +416,7 @@ describe("evmContractChallenge", () => {
       await expect(
         executeChallenge({
           publication,
-          ethClient,
+          mockClient,
           settings
         })
       ).rejects.toThrow(missingCase.expectedError);
@@ -445,7 +426,7 @@ describe("evmContractChallenge", () => {
   it("throws for unsupported condition operator", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
-    const ethClient = createClient({
+    const mockClient = createClient({
       verifyMessage,
       call: async () => ({ data: HIGH_BALANCE_DATA })
     });
@@ -453,7 +434,7 @@ describe("evmContractChallenge", () => {
     await expect(
       executeChallenge({
         publication: createPublication({ wallet }),
-        ethClient,
+        mockClient,
         settings: createChallengeSettings({ condition: "!1000" })
       })
     ).rejects.toThrow("Condition uses unsupported comparison operator");

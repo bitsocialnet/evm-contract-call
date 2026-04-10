@@ -1,7 +1,7 @@
 {
   "name": "@bitsocial/evm-contract-challenge",
   "version": "0.1.0",
-  "description": "Standalone EVM contract call challenge for plebbit-js",
+  "description": "Standalone EVM contract call challenge for pkc-js",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -45,7 +45,7 @@
   "devDependencies": {
     "@commitlint/cli": "20.4.3",
     "@commitlint/config-conventional": "20.4.3",
-    "@plebbit/plebbit-js": "https://github.com/plebbit/plebbit-js#10ed04e3866dd986a7f802bc9efd027f0e7d465b",
+    "@pkcprotocol/pkc-js": "github:pkcprotocol/pkc-js#7932a96bf",
     "@release-it/conventional-changelog": "10.0.5",
     "@types/node": "25.3.5",
     "commitizen": "4.3.1",
@@ -54,6 +54,13 @@
     "release-it": "19.2.4",
     "typescript": "5.9.3",
     "vitest": "4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bitsocialnet/evm-contract-call.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "config": {
     "commitizen": {

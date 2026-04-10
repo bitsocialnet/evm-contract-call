@@ -1,7 +1,10 @@
 import {
+  createPublicClient,
   decodeFunctionResult,
   encodeFunctionData,
-  type AbiFunction
+  http,
+  type AbiFunction,
+  type PublicClient
 } from "viem";
 import { normalize } from "viem/ens";
 import type {
@@ -10,12 +13,10 @@ import type {
   ChallengeResultInput,
   GetChallengeArgsInput,
   HexAddress,
-  Plebbit,
-  PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest,
-  SubplebbitChallengeSetting
+  PKC,
+  PublicationWithCommunityAuthorFromDecryptedChallengeRequest,
+  CommunityChallengeSetting
 } from "./types.js";
-
-// TODO need to think of how to add custom chain providers to challenge instead of just using the default
 
 const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
   {
@@ -24,6 +25,14 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     default: "eth",
     description: "The chain ticker",
     placeholder: "eth",
+    required: true
+  },
+  {
+    option: "rpcUrl",
+    label: "RPC URL",
+    default: "",
+    description: "The JSON-RPC URL for the chain.",
+    placeholder: "https://eth.llamarpc.com",
     required: true
   },
   {
@@ -86,18 +95,22 @@ type SupportedConditionOperator =
 
 type ConditionComparable = bigint | string;
 
-interface PlebbitWithOptionalAddressResolver extends Plebbit {
-  getPlebbitAddressFromPublicKey?: (publicKey: string) => Promise<string>;
+const createViemClient = (rpcUrl: string): PublicClient =>
+  createPublicClient({ transport: http(rpcUrl) });
+
+interface PKCWithOptionalAddressResolver extends PKC {
+  getPKCAddressFromPublicKey?: (publicKey: string) => Promise<string>;
 }
 
 interface SharedVerifyProps {
-  publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest;
+  publication: PublicationWithCommunityAuthorFromDecryptedChallengeRequest;
   chainTicker: string;
   condition: string;
   abi: Record<string, unknown>;
   error: string | undefined;
   contractAddress: string;
-  plebbit: Plebbit;
+  pkc: PKC;
+  rpcUrl: string;
 }
 
 const publicationFieldNames = [
@@ -105,24 +118,8 @@ const publicationFieldNames = [
   "vote",
   "commentEdit",
   "commentModeration",
-  "subplebbitEdit"
+  "communityEdit"
 ] as const;
-
-const getChainProviderWithSafety = (plebbit: Plebbit, chainTicker: string) => {
-  const chainProvider = plebbit.chainProviders[chainTicker];
-  if (!chainProvider) {
-    throw new Error("plebbit.chainProviders[chainTicker] is not defined");
-  }
-  return chainProvider;
-};
-
-const getPrimaryRpcUrl = (plebbit: Plebbit, chainTicker: string): string => {
-  const primaryUrl = getChainProviderWithSafety(plebbit, chainTicker).urls[0];
-  if (typeof primaryUrl !== "string") {
-    throw new Error("plebbit.chainProviders[chainTicker].urls[0] is not defined");
-  }
-  return primaryUrl;
-};
 
 const isStringDomain = (value: string | undefined): value is string =>
   typeof value === "string" && value.includes(".");
@@ -140,7 +137,7 @@ const normalizeEthAliasDomain = (address: string): string => {
 
 const derivePublicationFromChallengeRequest = (
   challengeRequestMessage: GetChallengeArgsInput["challengeRequestMessage"]
-): PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest => {
+): PublicationWithCommunityAuthorFromDecryptedChallengeRequest => {
   for (const fieldName of publicationFieldNames) {
     const publication = challengeRequestMessage[fieldName];
     if (publication) {
@@ -152,11 +149,11 @@ const derivePublicationFromChallengeRequest = (
 };
 
 const getPublicationSignerAddress = async (
-  plebbit: Plebbit,
-  publication: PublicationWithSubplebbitAuthorFromDecryptedChallengeRequest
+  pkc: PKC,
+  publication: PublicationWithCommunityAuthorFromDecryptedChallengeRequest
 ): Promise<string> => {
-  const maybeResolver = (plebbit as PlebbitWithOptionalAddressResolver)
-    .getPlebbitAddressFromPublicKey;
+  const maybeResolver = (pkc as PKCWithOptionalAddressResolver)
+    .getPKCAddressFromPublicKey;
   if (typeof maybeResolver === "function") {
     return maybeResolver(publication.signature.publicKey);
   }
@@ -173,23 +170,20 @@ const verifyAuthorWalletAddress = async (
   }
 
   if (isStringDomain(authorWallet.address)) {
-    const resolvedWalletAddress = await props.plebbit.resolveAuthorAddress({
+    const resolvedWalletAddress = await props.pkc.resolveAuthorName({
       address: authorWallet.address
     });
     const publicationSignatureAddress = await getPublicationSignerAddress(
-      props.plebbit,
+      props.pkc,
       props.publication
     );
 
     if (resolvedWalletAddress !== publicationSignatureAddress) {
-      return "The author wallet address's plebbit-author-address text record should resolve to the public key of the signature";
+      return "The author wallet address's pkc-author-address text record should resolve to the public key of the signature";
     }
   }
 
-  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
-    "eth",
-    getPrimaryRpcUrl(props.plebbit, "eth")
-  );
+  const viemClient = createViemClient(props.rpcUrl);
 
   const messageToBeSigned: Record<string, string | number> = {};
   messageToBeSigned.domainSeparator = "plebbit-author-wallet";
@@ -206,7 +200,7 @@ const verifyAuthorWalletAddress = async (
     return "The signature of the wallet is invalid";
   }
 
-  const cache = await props.plebbit._createStorageLRU({
+  const cache = await props.pkc._createStorageLRU({
     cacheName: "challenge_evm_contract_call_v1_wallet_last_timestamp",
     maxItems: Number.MAX_SAFE_INTEGER
   });
@@ -230,11 +224,11 @@ const verifyAuthorWalletAddress = async (
   const walletValidationFailure = await validateWalletAddressWithCondition({
     authorWalletAddress: authorWallet.address,
     condition: props.condition,
-    plebbit: props.plebbit,
     contractAddress: props.contractAddress,
     chainTicker: props.chainTicker,
     abi: props.abi,
-    error: props.error
+    error: props.error,
+    rpcUrl: props.rpcUrl
   });
 
   return walletValidationFailure;
@@ -250,10 +244,7 @@ const verifyAuthorENSAddress = async (
 
   const ensAddress = normalizeEthAliasDomain(authorAddress);
 
-  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
-    "eth",
-    getPrimaryRpcUrl(props.plebbit, "eth")
-  );
+  const viemClient = createViemClient(props.rpcUrl);
 
   if (typeof viemClient.getEnsAddress !== "function") {
     throw new Error("Failed to get owner of ENS address of author.address");
@@ -270,11 +261,11 @@ const verifyAuthorENSAddress = async (
   const walletValidationFailure = await validateWalletAddressWithCondition({
     authorWalletAddress: ownerOfAddress,
     condition: props.condition,
-    plebbit: props.plebbit,
     contractAddress: props.contractAddress,
     chainTicker: props.chainTicker,
     abi: props.abi,
-    error: props.error
+    error: props.error,
+    rpcUrl: props.rpcUrl
   });
 
   return walletValidationFailure;
@@ -288,15 +279,8 @@ const verifyAuthorNftWalletAddress = async (
   }
 
   const nftAvatar = props.publication.author.avatar;
-  const chainProvider = props.plebbit.chainProviders[nftAvatar.chainTicker];
-  if (!chainProvider) {
-    return "The subplebbit does not support NFTs from this chain";
-  }
 
-  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
-    nftAvatar.chainTicker,
-    getPrimaryRpcUrl(props.plebbit, nftAvatar.chainTicker)
-  );
+  const viemClient = createViemClient(props.rpcUrl);
 
   let currentOwner: HexAddress;
   try {
@@ -334,11 +318,11 @@ const verifyAuthorNftWalletAddress = async (
   const nftWalletValidationFailure = await validateWalletAddressWithCondition({
     authorWalletAddress: currentOwner,
     condition: props.condition,
-    plebbit: props.plebbit,
     contractAddress: props.contractAddress,
     chainTicker: props.chainTicker,
     abi: props.abi,
-    error: props.error
+    error: props.error,
+    rpcUrl: props.rpcUrl
   });
 
   return nftWalletValidationFailure;
@@ -349,12 +333,9 @@ const getContractCallResponse = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   authorWalletAddress: string;
-  plebbit: Plebbit;
+  rpcUrl: string;
 }): Promise<unknown> => {
-  const viemClient = props.plebbit._domainResolver._createViemClientIfNeeded(
-    props.chainTicker,
-    getPrimaryRpcUrl(props.plebbit, props.chainTicker)
-  );
+  const viemClient = createViemClient(props.rpcUrl);
 
   const encodedParameters = encodeFunctionData({
     abi: [props.abi as AbiFunction],
@@ -447,7 +428,7 @@ const validateWalletAddressWithCondition = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   error: string | undefined;
-  plebbit: Plebbit;
+  rpcUrl: string;
 }): Promise<string | undefined> => {
   let contractCallResponse: unknown;
   try {
@@ -456,7 +437,7 @@ const validateWalletAddressWithCondition = async (props: {
       contractAddress: props.contractAddress,
       abi: props.abi,
       authorWalletAddress: props.authorWalletAddress,
-      plebbit: props.plebbit
+      rpcUrl: props.rpcUrl
     });
   } catch {
     return "Failed getting contract call response from blockchain.";
@@ -480,13 +461,16 @@ const parseChallengeAbi = (abi: string): Record<string, unknown> => {
 const getChallenge = async ({
   challengeSettings,
   challengeRequestMessage,
-  subplebbit
+  community
 }: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
-  let { chainTicker, address, abi, condition, error } =
+  let { chainTicker, address, abi, condition, error, rpcUrl } =
     challengeSettings?.options || {};
 
   if (!chainTicker) {
     throw new Error("missing option chainTicker");
+  }
+  if (!rpcUrl) {
+    throw new Error("missing option rpcUrl");
   }
   if (!address) {
     throw new Error("missing option address");
@@ -508,13 +492,14 @@ const getChallenge = async ({
   const publication = derivePublicationFromChallengeRequest(challengeRequestMessage);
 
   const sharedProps: SharedVerifyProps = {
-    plebbit: subplebbit._plebbit,
+    pkc: community._pkc,
     abi: parsedAbi,
     condition,
     error,
     chainTicker,
     publication,
-    contractAddress: address
+    contractAddress: address,
+    rpcUrl
   };
 
   const walletFailureReason = await verifyAuthorWalletAddress(sharedProps);
@@ -546,7 +531,7 @@ const getChallenge = async ({
 function evmContractChallenge({
   challengeSettings
 }: {
-  challengeSettings: SubplebbitChallengeSetting;
+  challengeSettings: CommunityChallengeSetting;
 }): ChallengeFileInput {
   const chainTicker = challengeSettings?.options?.chainTicker;
   const type = `chain/${chainTicker || "eth"}` as ChallengeInput["type"];
