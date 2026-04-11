@@ -45,11 +45,11 @@ const HIGH_BALANCE_DATA =
 const ZERO_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as HexAddress;
 const DEFAULT_AUTHOR_ADDRESS = "author-address";
-const DEFAULT_RPC_URL = "https://eth.example";
+const DEFAULT_RPC_URLS = "https://eth.example";
 
 const DEFAULT_OPTIONS = {
   chainTicker: "eth",
-  rpcUrl: DEFAULT_RPC_URL,
+  rpcUrls: DEFAULT_RPC_URLS,
   address: CONTRACT_ADDRESS,
   abi: BALANCE_ABI_JSON,
   condition: ">1000",
@@ -439,7 +439,7 @@ describe("evmContractChallenge", () => {
     ).rejects.toThrow("Condition uses unsupported comparison operator");
   });
 
-  it("passes when rpcUrl is omitted (uses viem defaults)", async () => {
+  it("passes when rpcUrls is omitted (uses viem defaults)", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
     const mockClient = createClient({
@@ -447,7 +447,7 @@ describe("evmContractChallenge", () => {
       call: async () => ({ data: HIGH_BALANCE_DATA })
     });
 
-    const { rpcUrl: _, ...optionsWithoutRpcUrl } = DEFAULT_OPTIONS;
+    const { rpcUrls: _, ...optionsWithoutRpcUrl } = DEFAULT_OPTIONS;
     const settings: CommunityChallengeSetting = {
       name: "evm-contract-call",
       options: optionsWithoutRpcUrl

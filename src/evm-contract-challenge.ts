@@ -2,6 +2,7 @@ import {
   createPublicClient,
   decodeFunctionResult,
   encodeFunctionData,
+  fallback,
   http,
   type AbiFunction,
   type PublicClient
@@ -28,11 +29,11 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     required: true
   },
   {
-    option: "rpcUrl",
-    label: "RPC URL",
+    option: "rpcUrls",
+    label: "RPC URLs",
     default: "",
-    description: "The JSON-RPC URL for the chain.",
-    placeholder: "https://eth.llamarpc.com"
+    description: "Comma-separated JSON-RPC URLs for the chain.",
+    placeholder: "https://eth.llamarpc.com,https://rpc.ankr.com/eth"
   },
   {
     option: "address",
@@ -94,8 +95,24 @@ type SupportedConditionOperator =
 
 type ConditionComparable = bigint | string;
 
-const createViemClient = (rpcUrl?: string): PublicClient =>
-  createPublicClient({ transport: http(rpcUrl) });
+const createViemClient = (rpcUrls?: string): PublicClient => {
+  const urls = (rpcUrls ?? "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+
+  const transport =
+    urls.length === 0
+      ? http()
+      : urls.length === 1
+        ? http(urls[0])
+        : fallback(
+            urls.map((u) => http(u)),
+            { rank: true }
+          );
+
+  return createPublicClient({ transport });
+};
 
 interface PKCWithOptionalAddressResolver extends PKC {
   getPKCAddressFromPublicKey?: (publicKey: string) => Promise<string>;
@@ -109,7 +126,7 @@ interface SharedVerifyProps {
   error: string | undefined;
   contractAddress: string;
   pkc: PKC;
-  rpcUrl: string | undefined;
+  rpcUrls: string | undefined;
 }
 
 const publicationFieldNames = [
@@ -182,7 +199,7 @@ const verifyAuthorWalletAddress = async (
     }
   }
 
-  const viemClient = createViemClient(props.rpcUrl);
+  const viemClient = createViemClient(props.rpcUrls);
 
   const messageToBeSigned: Record<string, string | number> = {};
   messageToBeSigned.domainSeparator = "plebbit-author-wallet";
@@ -227,7 +244,7 @@ const verifyAuthorWalletAddress = async (
     chainTicker: props.chainTicker,
     abi: props.abi,
     error: props.error,
-    rpcUrl: props.rpcUrl
+    rpcUrls: props.rpcUrls
   });
 
   return walletValidationFailure;
@@ -243,7 +260,7 @@ const verifyAuthorENSAddress = async (
 
   const ensAddress = normalizeEthAliasDomain(authorAddress);
 
-  const viemClient = createViemClient(props.rpcUrl);
+  const viemClient = createViemClient(props.rpcUrls);
 
   if (typeof viemClient.getEnsAddress !== "function") {
     throw new Error("Failed to get owner of ENS address of author.address");
@@ -264,7 +281,7 @@ const verifyAuthorENSAddress = async (
     chainTicker: props.chainTicker,
     abi: props.abi,
     error: props.error,
-    rpcUrl: props.rpcUrl
+    rpcUrls: props.rpcUrls
   });
 
   return walletValidationFailure;
@@ -279,7 +296,7 @@ const verifyAuthorNftWalletAddress = async (
 
   const nftAvatar = props.publication.author.avatar;
 
-  const viemClient = createViemClient(props.rpcUrl);
+  const viemClient = createViemClient(props.rpcUrls);
 
   let currentOwner: HexAddress;
   try {
@@ -321,7 +338,7 @@ const verifyAuthorNftWalletAddress = async (
     chainTicker: props.chainTicker,
     abi: props.abi,
     error: props.error,
-    rpcUrl: props.rpcUrl
+    rpcUrls: props.rpcUrls
   });
 
   return nftWalletValidationFailure;
@@ -332,9 +349,9 @@ const getContractCallResponse = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   authorWalletAddress: string;
-  rpcUrl: string | undefined;
+  rpcUrls: string | undefined;
 }): Promise<unknown> => {
-  const viemClient = createViemClient(props.rpcUrl);
+  const viemClient = createViemClient(props.rpcUrls);
 
   const encodedParameters = encodeFunctionData({
     abi: [props.abi as AbiFunction],
@@ -427,7 +444,7 @@ const validateWalletAddressWithCondition = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   error: string | undefined;
-  rpcUrl: string | undefined;
+  rpcUrls: string | undefined;
 }): Promise<string | undefined> => {
   let contractCallResponse: unknown;
   try {
@@ -436,7 +453,7 @@ const validateWalletAddressWithCondition = async (props: {
       contractAddress: props.contractAddress,
       abi: props.abi,
       authorWalletAddress: props.authorWalletAddress,
-      rpcUrl: props.rpcUrl
+      rpcUrls: props.rpcUrls
     });
   } catch {
     return "Failed getting contract call response from blockchain.";
@@ -526,7 +543,7 @@ const getChallenge = async ({
   challengeRequestMessage,
   community
 }: GetChallengeArgsInput): Promise<ChallengeResultInput> => {
-  let { chainTicker, address, abi, condition, error, rpcUrl } =
+  let { chainTicker, address, abi, condition, error, rpcUrls } =
     challengeSettings?.options || {};
 
   if (!chainTicker) {
@@ -559,7 +576,7 @@ const getChallenge = async ({
     chainTicker,
     publication,
     contractAddress: address,
-    rpcUrl
+    rpcUrls
   };
 
   const walletFailureReason = await verifyAuthorWalletAddress(sharedProps);
