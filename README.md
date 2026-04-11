@@ -1,6 +1,6 @@
 # @bitsocial/evm-contract-challenge
 
-An automatic challenge for `@pkcprotocol/pkc-js` communities that verifies an author's EVM wallet address meets a condition from a smart contract call. Community owners configure a contract address, ABI, and condition (for example, requiring a USDC balance greater than 1000), and the challenge runs transparently whenever an author publishes. It checks three verification paths in order: the author's linked wallet address, ENS/BSO domain resolution, or NFT avatar ownership. If any path passes, the author is allowed through.
+An automatic challenge for `@pkcprotocol/pkc-js` communities that verifies an author's EVM wallet address meets a condition from a smart contract call.
 
 ## How it works
 
@@ -31,10 +31,10 @@ Edit your community to use the challenge:
 bitsocial community edit your-community.bso \
   '--settings.challenges[0].name' evm-contract-call \
   '--settings.challenges[0].options.chainTicker' eth \
-  '--settings.challenges[0].options.address' '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' \
+  '--settings.challenges[0].options.address' '0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f' \
   '--settings.challenges[0].options.abi' '{"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}' \
-  '--settings.challenges[0].options.condition' '>1000' \
-  '--settings.challenges[0].options.error' 'You need at least 1000 USDC to post.'
+  '--settings.challenges[0].options.condition' '>10000000000000000000' \
+  '--settings.challenges[0].options.error' 'You need at least 10 Bitsocial tokens to post.'
 ```
 
 ### With pkc-js (TypeScript)
@@ -62,16 +62,47 @@ await community.edit({
         name: "evm-contract-call",
         options: {
           chainTicker: "eth",
-          address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          address: "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f",
           abi: '{"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}',
-          condition: ">1000",
-          error: "You need at least 1000 USDC to post."
+          condition: ">10000000000000000000",
+          error: "You need at least 10 Bitsocial tokens to post."
         }
       }
     ]
   }
 });
 ```
+
+## Example Challenges
+
+Each example uses a read-only contract function that takes a single `address` argument. The `condition` compares against the raw return value including decimal places (e.g. 10 USDC with 6 decimals = `10000000` raw).
+
+### Common ABIs
+
+**`balanceOf`** — standard ERC-20 / ERC-721 token balance:
+
+```json
+{"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}
+```
+
+**`getScore`** — Gitcoin Passport score (returns `uint256` with 4 decimals):
+
+```json
+{"inputs":[{"internalType":"address","name":"user","type":"address"}],"name":"getScore","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}
+```
+
+### Examples
+
+| Description | `chainTicker` | `address` | ABI | `condition` |
+|---|---|---|---|---|
+| At least 10 Bitsocial (BSO) tokens | `eth` | `0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f` | `balanceOf` | `>10000000000000000000` |
+| Minimum 10 USDC | `eth` | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | `balanceOf` | `>10000000` |
+| Any WETH balance | `eth` | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | `balanceOf` | `>0` |
+| Gitcoin Passport score above 20 (proof of personhood) | `op` | `0xd6c51bB9E23bD7f1fEa22A3F2f85E3BFC8338Cb0` | `getScore` | `>200000` |
+| At least 10 MATIC on Polygon | `matic` | `0x0000000000000000000000000000000000001010` | `balanceOf` | `>10000000000000000000` |
+| Any stETH balance (Lido staked ETH) | `eth` | `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | `balanceOf` | `>0` |
+
+> For chains other than Ethereum mainnet (e.g. Optimism, Polygon), you will also need to set `rpcUrl` to a JSON-RPC endpoint for that chain.
 
 ## Challenge Options
 
