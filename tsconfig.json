@@ -12,10 +12,7 @@
     "resolveJsonModule": true,
     "esModuleInterop": false,
     "allowSyntheticDefaultImports": false,
-    "types": ["node", "vitest/globals"],
-    "paths": {
-      "@pkcprotocol/pkc-js/challenges": ["./node_modules/@pkcprotocol/pkc-js/dist/node/challenges"]
-    }
+    "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
   "exclude": ["dist", "node_modules"]
