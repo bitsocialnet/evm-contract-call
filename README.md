@@ -1,11 +1,6 @@
 # @bitsocial/evm-contract-challenge
 
-Standalone EVM contract call challenge extracted from `plebbit-js`, packaged with independent dependencies.
-
-## Status
-
-- Runtime peer dependency is currently `@plebbit/plebbit-js`.
-- This package is expected to migrate to `@pkcprotocol/pkc-js` soon.
+Standalone EVM contract call challenge for `@pkcprotocol/pkc-js`.
 
 ## Requirements
 
@@ -21,10 +16,10 @@ npm install @bitsocial/evm-contract-challenge
 ## Usage
 
 ```ts
-import Plebbit from "@plebbit/plebbit-js";
+import Pkc from "@pkcprotocol/pkc-js";
 import { evmContractChallenge } from "@bitsocial/evm-contract-challenge";
 
-Plebbit.challenges["evm-contract-call"] = evmContractChallenge;
+Pkc.challenges["evm-contract-call"] = evmContractChallenge;
 ```
 
 ## Challenge Options

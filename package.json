@@ -57,7 +57,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bitsocialnet/evm-contract-call.git"
+    "url": "git+https://github.com/bitsocialnet/evm-contract-challenge.git"
   },
   "publishConfig": {
     "access": "public"
