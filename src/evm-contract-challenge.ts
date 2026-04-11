@@ -450,11 +450,75 @@ const validateWalletAddressWithCondition = async (props: {
 };
 
 const parseChallengeAbi = (abi: string): Record<string, unknown> => {
-  const parsed = JSON.parse(abi) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(abi) as unknown;
+  } catch (cause) {
+    throw new Error(
+      `option abi is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("option abi must be a JSON object");
   }
-  return parsed as Record<string, unknown>;
+
+  const obj = parsed as Record<string, unknown>;
+
+  if ("type" in obj && obj["type"] !== undefined) {
+    if (obj["type"] !== "function") {
+      throw new Error(
+        `option abi "type" must be "function", got "${String(obj["type"])}"`
+      );
+    }
+  } else {
+    obj["type"] = "function";
+  }
+
+  if (typeof obj["name"] !== "string" || obj["name"].length === 0) {
+    throw new Error(
+      'option abi must have a "name" string property (the contract function name, e.g. "balanceOf")'
+    );
+  }
+
+  if (!Array.isArray(obj["inputs"])) {
+    throw new Error('option abi must have an "inputs" array property');
+  }
+  if (obj["inputs"].length !== 1) {
+    throw new Error(
+      'option abi "inputs" must have exactly one parameter (the address input for the wallet to check)'
+    );
+  }
+  const firstInput = obj["inputs"][0] as Record<string, unknown> | undefined;
+  if (
+    typeof firstInput !== "object" ||
+    firstInput === null ||
+    firstInput["type"] !== "address"
+  ) {
+    throw new Error('option abi "inputs[0].type" must be "address"');
+  }
+
+  if (!Array.isArray(obj["outputs"])) {
+    throw new Error('option abi must have an "outputs" array property');
+  }
+  if (obj["outputs"].length === 0) {
+    throw new Error('option abi "outputs" must have at least one entry');
+  }
+
+  const validMutabilities = ["pure", "view", "nonpayable", "payable"];
+  if (!("stateMutability" in obj) || obj["stateMutability"] === undefined) {
+    if (obj["constant"] === true) {
+      obj["stateMutability"] = "view";
+    } else {
+      obj["stateMutability"] = "nonpayable";
+    }
+  } else if (!validMutabilities.includes(obj["stateMutability"] as string)) {
+    throw new Error(
+      'option abi "stateMutability" must be one of: pure, view, nonpayable, payable'
+    );
+  }
+
+  return obj;
 };
 
 const getChallenge = async ({

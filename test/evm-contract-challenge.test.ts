@@ -469,4 +469,159 @@ describe("evmContractChallenge", () => {
 
     expect(file.type).toBe("chain/matic");
   });
+
+  describe("ABI validation", () => {
+    const VALID_ABI_BASE = {
+      type: "function" as const,
+      name: "balanceOf",
+      inputs: [
+        { internalType: "address", name: "account", type: "address" }
+      ],
+      outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+      stateMutability: "view"
+    };
+
+    const buildAbiJson = (
+      overrides: Record<string, unknown>
+    ): string => JSON.stringify({ ...VALID_ABI_BASE, ...overrides });
+
+    const buildAbiJsonWithout = (...keysToOmit: string[]): string =>
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(VALID_ABI_BASE).filter(
+            ([key]) => !keysToOmit.includes(key)
+          )
+        )
+      );
+
+    let mockClient: MockViemClient;
+    let publication: ReturnType<typeof createPublication>;
+
+    beforeAll(async () => {
+      const wallet = await signWalletProof({
+        authorAddress: DEFAULT_AUTHOR_ADDRESS
+      });
+      publication = createPublication({ wallet });
+      mockClient = createClient({
+        verifyMessage,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      });
+    });
+
+    const expectAbiError = (abi: string, expectedError: string) =>
+      expect(
+        executeChallenge({
+          publication,
+          mockClient,
+          settings: createChallengeSettings({ abi })
+        })
+      ).rejects.toThrow(expectedError);
+
+    it("throws for invalid JSON", async () => {
+      await expectAbiError("not json", "option abi is not valid JSON");
+    });
+
+    it("throws for JSON array", async () => {
+      await expectAbiError("[]", "option abi must be a JSON object");
+    });
+
+    it("throws for JSON null", async () => {
+      await expectAbiError("null", "option abi must be a JSON object");
+    });
+
+    it("throws for JSON string primitive", async () => {
+      await expectAbiError('"hello"', "option abi must be a JSON object");
+    });
+
+    it('throws when type is not "function"', async () => {
+      await expectAbiError(
+        buildAbiJson({ type: "event" }),
+        'option abi "type" must be "function"'
+      );
+    });
+
+    it("throws for missing name", async () => {
+      await expectAbiError(
+        buildAbiJsonWithout("name"),
+        'option abi must have a "name" string property'
+      );
+    });
+
+    it("throws for missing inputs", async () => {
+      await expectAbiError(
+        buildAbiJsonWithout("inputs"),
+        'option abi must have an "inputs" array property'
+      );
+    });
+
+    it("throws when inputs has wrong number of parameters", async () => {
+      await expectAbiError(
+        buildAbiJson({
+          inputs: [
+            { name: "a", type: "address" },
+            { name: "b", type: "uint256" }
+          ]
+        }),
+        'option abi "inputs" must have exactly one parameter'
+      );
+    });
+
+    it("throws when input type is not address", async () => {
+      await expectAbiError(
+        buildAbiJson({
+          inputs: [{ name: "amount", type: "uint256" }]
+        }),
+        'option abi "inputs[0].type" must be "address"'
+      );
+    });
+
+    it("throws for missing outputs", async () => {
+      await expectAbiError(
+        buildAbiJsonWithout("outputs"),
+        'option abi must have an "outputs" array property'
+      );
+    });
+
+    it("throws for empty outputs", async () => {
+      await expectAbiError(
+        buildAbiJson({ outputs: [] }),
+        'option abi "outputs" must have at least one entry'
+      );
+    });
+
+    it("throws for invalid stateMutability", async () => {
+      await expectAbiError(
+        buildAbiJson({ stateMutability: "readonly" }),
+        'option abi "stateMutability" must be one of'
+      );
+    });
+
+    it("accepts ABI without type field (defaults to function)", async () => {
+      const result = await executeChallenge({
+        publication,
+        mockClient,
+        settings: createChallengeSettings({
+          abi: buildAbiJsonWithout("type")
+        })
+      });
+      expect(result).toEqual({ success: true });
+    });
+
+    it("accepts ABI without stateMutability when constant is true", async () => {
+      const abi = JSON.stringify({
+        ...Object.fromEntries(
+          Object.entries(VALID_ABI_BASE).filter(
+            ([key]) => key !== "stateMutability"
+          )
+        ),
+        constant: true
+      });
+      const result = await executeChallenge({
+        publication,
+        mockClient,
+        settings: createChallengeSettings({ abi })
+      });
+      expect(result).toEqual({ success: true });
+    });
+  });
 });
