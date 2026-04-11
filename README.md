@@ -79,13 +79,13 @@ Each example uses a read-only contract function that takes a single `address` ar
 
 ### Common ABIs
 
-**`balanceOf`** — standard ERC-20 / ERC-721 token balance:
+<a id="balanceof-abi"></a>**`balanceOf`** — standard ERC-20 / ERC-721 token balance:
 
 ```json
 {"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}
 ```
 
-**`getScore`** — Gitcoin Passport score (returns `uint256` with 4 decimals):
+<a id="getscore-abi"></a>**`getScore`** — Gitcoin Passport score (returns `uint256` with 4 decimals):
 
 ```json
 {"inputs":[{"internalType":"address","name":"user","type":"address"}],"name":"getScore","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}
@@ -95,12 +95,12 @@ Each example uses a read-only contract function that takes a single `address` ar
 
 | Description | `chainTicker` | `address` | ABI | `condition` |
 |---|---|---|---|---|
-| At least 10 Bitsocial (BSO) tokens | `eth` | `0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f` | `balanceOf` | `>10000000000000000000` |
-| Minimum 10 USDC | `eth` | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | `balanceOf` | `>10000000` |
-| Any WETH balance | `eth` | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | `balanceOf` | `>0` |
-| Gitcoin Passport score above 20 (proof of personhood) | `op` | `0xd6c51bB9E23bD7f1fEa22A3F2f85E3BFC8338Cb0` | `getScore` | `>200000` |
-| At least 10 MATIC on Polygon | `matic` | `0x0000000000000000000000000000000000001010` | `balanceOf` | `>10000000000000000000` |
-| Any stETH balance (Lido staked ETH) | `eth` | `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | `balanceOf` | `>0` |
+| At least 10 Bitsocial (BSO) tokens | `eth` | `0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f` | [`balanceOf`](#balanceof-abi) | `>10000000000000000000` |
+| Minimum 10 USDC | `eth` | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | [`balanceOf`](#balanceof-abi) | `>10000000` |
+| Any WETH balance | `eth` | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | [`balanceOf`](#balanceof-abi) | `>0` |
+| Gitcoin Passport score above 20 (proof of personhood) | `op` | `0xd6c51bB9E23bD7f1fEa22A3F2f85E3BFC8338Cb0` | [`getScore`](#getscore-abi) | `>200000` |
+| At least 10 MATIC on Polygon | `matic` | `0x0000000000000000000000000000000000001010` | [`balanceOf`](#balanceof-abi) | `>10000000000000000000` |
+| Any stETH balance (Lido staked ETH) | `eth` | `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | [`balanceOf`](#balanceof-abi) | `>0` |
 
 > For chains other than Ethereum mainnet (e.g. Optimism, Polygon), you will also need to set `rpcUrl` to a JSON-RPC endpoint for that chain.
 
