@@ -37,6 +37,43 @@ bitsocial community edit your-community.bso \
   '--settings.challenges[0].options.error' 'You need at least 10 Bitsocial tokens to post.'
 ```
 
+### With pkc-js over RPC
+
+If your RPC server is already running, first install the challenge on the server:
+
+```bash
+bitsocial challenge install @bitsocial/evm-contract-challenge
+```
+
+Then from your RPC client, connect and set the challenge on your community by name — no npm install or challenge registration needed on the client side:
+
+```ts
+import PKC from "@pkcprotocol/pkc-js";
+
+const pkc = await PKC({
+  pkcRpcClientsOptions: ["ws://localhost:9138"]
+});
+
+const community = await pkc.createCommunity({ address: "your-community-address.bso" });
+
+await community.edit({
+  settings: {
+    challenges: [
+      {
+        name: "evm-contract-call",
+        options: {
+          chainTicker: "eth",
+          address: "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f",
+          abi: '{"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}',
+          condition: ">10000000000000000000",
+          error: "You need at least 10 Bitsocial tokens to post."
+        }
+      }
+    ]
+  }
+});
+```
+
 ### With pkc-js (TypeScript)
 
 If you are running your own node locally without connecting over RPC, you can install via npm and register the challenge manually:
