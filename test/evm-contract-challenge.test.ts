@@ -397,7 +397,6 @@ describe("evmContractChallenge", () => {
 
     const missingCases: Array<{ key: string; expectedError: string }> = [
       { key: "chainTicker", expectedError: "missing option chainTicker" },
-      { key: "rpcUrl", expectedError: "missing option rpcUrl" },
       { key: "address", expectedError: "missing option address" },
       { key: "abi", expectedError: "missing option abi" },
       { key: "condition", expectedError: "missing option condition" }
@@ -438,6 +437,29 @@ describe("evmContractChallenge", () => {
         settings: createChallengeSettings({ condition: "!1000" })
       })
     ).rejects.toThrow("Condition uses unsupported comparison operator");
+  });
+
+  it("passes when rpcUrl is omitted (uses viem defaults)", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const mockClient = createClient({
+      verifyMessage,
+      call: async () => ({ data: HIGH_BALANCE_DATA })
+    });
+
+    const { rpcUrl: _, ...optionsWithoutRpcUrl } = DEFAULT_OPTIONS;
+    const settings: CommunityChallengeSetting = {
+      name: "evm-contract-call",
+      options: optionsWithoutRpcUrl
+    };
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient,
+      settings
+    });
+
+    expect(result).toEqual({ success: true });
   });
 
   it("returns chain type from chainTicker option", () => {

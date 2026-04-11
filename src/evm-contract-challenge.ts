@@ -32,8 +32,7 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     label: "RPC URL",
     default: "",
     description: "The JSON-RPC URL for the chain.",
-    placeholder: "https://eth.llamarpc.com",
-    required: true
+    placeholder: "https://eth.llamarpc.com"
   },
   {
     option: "address",
@@ -95,7 +94,7 @@ type SupportedConditionOperator =
 
 type ConditionComparable = bigint | string;
 
-const createViemClient = (rpcUrl: string): PublicClient =>
+const createViemClient = (rpcUrl?: string): PublicClient =>
   createPublicClient({ transport: http(rpcUrl) });
 
 interface PKCWithOptionalAddressResolver extends PKC {
@@ -110,7 +109,7 @@ interface SharedVerifyProps {
   error: string | undefined;
   contractAddress: string;
   pkc: PKC;
-  rpcUrl: string;
+  rpcUrl: string | undefined;
 }
 
 const publicationFieldNames = [
@@ -333,7 +332,7 @@ const getContractCallResponse = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   authorWalletAddress: string;
-  rpcUrl: string;
+  rpcUrl: string | undefined;
 }): Promise<unknown> => {
   const viemClient = createViemClient(props.rpcUrl);
 
@@ -428,7 +427,7 @@ const validateWalletAddressWithCondition = async (props: {
   contractAddress: string;
   abi: Record<string, unknown>;
   error: string | undefined;
-  rpcUrl: string;
+  rpcUrl: string | undefined;
 }): Promise<string | undefined> => {
   let contractCallResponse: unknown;
   try {
@@ -468,9 +467,6 @@ const getChallenge = async ({
 
   if (!chainTicker) {
     throw new Error("missing option chainTicker");
-  }
-  if (!rpcUrl) {
-    throw new Error("missing option rpcUrl");
   }
   if (!address) {
     throw new Error("missing option address");
