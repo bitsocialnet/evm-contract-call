@@ -70,7 +70,7 @@ beforeEach(() => {
 const createChallengeSettings = (
   overrides: Partial<typeof DEFAULT_OPTIONS> = {}
 ): CommunityChallengeSetting => ({
-  name: "evm-contract-call",
+  name: "@bitsocial/evm-contract-challenge",
   options: {
     ...DEFAULT_OPTIONS,
     ...overrides
@@ -408,7 +408,7 @@ describe("evmContractChallenge", () => {
       );
       const options = Object.fromEntries(entries) as Record<string, string>;
       const settings: CommunityChallengeSetting = {
-        name: "evm-contract-call",
+        name: "@bitsocial/evm-contract-challenge",
         options
       };
 
@@ -449,7 +449,7 @@ describe("evmContractChallenge", () => {
 
     const { rpcUrls: _, ...optionsWithoutRpcUrl } = DEFAULT_OPTIONS;
     const settings: CommunityChallengeSetting = {
-      name: "evm-contract-call",
+      name: "@bitsocial/evm-contract-challenge",
       options: optionsWithoutRpcUrl
     };
 

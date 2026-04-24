@@ -29,7 +29,7 @@ Edit your community to use the challenge:
 
 ```bash
 bitsocial community edit your-community.bso \
-  '--settings.challenges[0].name' evm-contract-call \
+  '--settings.challenges[0].name' @bitsocial/evm-contract-challenge \
   '--settings.challenges[0].options.chainTicker' eth \
   '--settings.challenges[0].options.address' '0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f' \
   '--settings.challenges[0].options.abi' '{"constant":true,"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}' \
@@ -60,7 +60,7 @@ await community.edit({
   settings: {
     challenges: [
       {
-        name: "evm-contract-call",
+        name: "@bitsocial/evm-contract-challenge",
         options: {
           chainTicker: "eth",
           address: "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f",
@@ -86,7 +86,7 @@ npm install @bitsocial/evm-contract-challenge
 import PKC from "@pkcprotocol/pkc-js";
 import { evmContractChallenge } from "@bitsocial/evm-contract-challenge";
 
-PKC.challenges["evm-contract-call"] = evmContractChallenge;
+PKC.challenges["@bitsocial/evm-contract-challenge"] = evmContractChallenge;
 ```
 
 Then set the challenge on your community:
@@ -96,7 +96,7 @@ await community.edit({
   settings: {
     challenges: [
       {
-        name: "evm-contract-call",
+        name: "@bitsocial/evm-contract-challenge",
         options: {
           chainTicker: "eth",
           address: "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f",
