@@ -40,7 +40,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "viem": "2.47.0"
+    "viem": "2.55.19"
   },
   "devDependencies": {
     "@commitlint/cli": "20.4.3",
