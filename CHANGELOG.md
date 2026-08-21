@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.5...v0.1.6) (2026-08-21)
+
+### Bug Fixes
+
+* **deps:** scope the nested overrides by range so npm ci stays in sync ([7acd8f5](https://github.com/bitsocialnet/evm-contract-challenge/commit/7acd8f548ba83029166f44a0239477c2ea18eff5))
+
 ## [0.1.5](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.4...v0.1.5) (2026-08-21)
 
 ### Features
