@@ -94,13 +94,16 @@ const createClient = (overrides: Partial<MockViemClient> = {}): MockViemClient =
 };
 
 const createCommunity = (params: {
-  resolveAuthorName?: (args: { address: string }) => Promise<string | null>;
+  resolveAuthorName?: (args: {
+    name: string;
+  }) => Promise<{ resolvedAuthorName: string | null }>;
 } = {}) => {
   const storage = new Map<string, unknown>();
 
   const pkc = {
     resolveAuthorName:
-      params.resolveAuthorName ?? (async ({ address }: { address: string }) => address),
+      params.resolveAuthorName ??
+      (async ({ name }: { name: string }) => ({ resolvedAuthorName: name })),
     _createStorageLRU: async () => ({
       getItem: async (key: string) => storage.get(key),
       setItem: async (key: string, value: unknown) => {
@@ -196,9 +199,10 @@ const executeChallenge = async (params: {
   publication: PublicationWithCommunityAuthorFromDecryptedChallengeRequest;
   settings?: CommunityChallengeSetting;
   mockClient: MockViemClient;
+  community?: ReturnType<typeof createCommunity>;
 }): Promise<ChallengeResultInput> => {
   const settings = params.settings ?? createChallengeSettings();
-  const community = createCommunity();
+  const community = params.community ?? createCommunity();
 
   currentMockClient = params.mockClient;
 
@@ -468,6 +472,57 @@ describe("evmContractChallenge", () => {
     });
 
     expect(file.type).toBe("chain/matic");
+  });
+
+  it("rejects a domain wallet address whose name record resolves elsewhere", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+    // author.wallets[chainTicker].address may be a domain rather than a 0x address, in which case its
+    // pkc-author-address record has to resolve to the publication signer.
+    const domainWallet = { ...wallet, address: "wallet-owner.eth" } as typeof wallet;
+    const resolveAuthorNameCalls: Array<{ name: string }> = [];
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet: domainWallet }),
+      mockClient: createClient({
+        verifyMessage: async () => true,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      community: createCommunity({
+        resolveAuthorName: async (args) => {
+          resolveAuthorNameCalls.push(args);
+          return { resolvedAuthorName: "someone-else" };
+        }
+      })
+    });
+
+    // pkc-js 0.0.85 takes { name } and returns { resolvedAuthorName }, not an address and a bare string.
+    expect(resolveAuthorNameCalls).toEqual([{ name: "wallet-owner.eth" }]);
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "walletFailureReason='The author wallet address's pkc-author-address text record should resolve to the public key of the signature'"
+    );
+  });
+
+  it("rejects a domain wallet address that does not resolve at all", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+    const domainWallet = { ...wallet, address: "wallet-owner.eth" } as typeof wallet;
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet: domainWallet }),
+      mockClient: createClient({
+        verifyMessage: async () => true,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      community: createCommunity({
+        resolveAuthorName: async () => ({ resolvedAuthorName: null })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "walletFailureReason='The author wallet address's pkc-author-address text record should resolve to the public key of the signature'"
+    );
   });
 
   describe("ABI validation", () => {

@@ -186,15 +186,15 @@ const verifyAuthorWalletAddress = async (
   }
 
   if (isStringDomain(authorWallet.address)) {
-    const resolvedWalletAddress = await props.pkc.resolveAuthorName({
-      address: authorWallet.address
+    const { resolvedAuthorName } = await props.pkc.resolveAuthorName({
+      name: authorWallet.address
     });
     const publicationSignatureAddress = await getPublicationSignerAddress(
       props.pkc,
       props.publication
     );
 
-    if (resolvedWalletAddress !== publicationSignatureAddress) {
+    if (resolvedAuthorName !== publicationSignatureAddress) {
       return "The author wallet address's pkc-author-address text record should resolve to the public key of the signature";
     }
   }
