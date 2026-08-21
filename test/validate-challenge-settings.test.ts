@@ -145,6 +145,20 @@ describe("validateChallengeSettings", () => {
         validate({ chainTicker: "notachain", rpcUrls: "https://rpc.example" })
       ).not.toThrow();
     });
+
+    it("requires rpcUrls for a ticker that only names an inherited object key", () => {
+      // A bare chainsByTicker[ticker] lookup answers these with a function off Object.prototype, which
+      // reads as "this ticker has a built-in RPC" and lets the edit through without rpcUrls.
+      for (const ticker of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+        expect(() => validate({ chainTicker: ticker, rpcUrls: undefined })).toThrow(
+          new RegExp(`option rpcUrls is required for chainTicker "${ticker}"`)
+        );
+      }
+    });
+
+    it("normalizes the chainTicker before deciding it has a built-in RPC", () => {
+      expect(() => validate({ chainTicker: " ETH ", rpcUrls: undefined })).not.toThrow();
+    });
   });
 
   describe("address", () => {
@@ -259,6 +273,19 @@ describe("validateChallengeSettings", () => {
 
     it("accepts an equality check against a non-numeric value", () => {
       expect(() => validate({ condition: "=some-string" })).not.toThrow();
+    });
+
+    it("accepts an ordering comparison padded after the operator", () => {
+      // Only worth accepting because parseCondition trims too. While it did not, this validated as
+      // numeric and then ran as a String() comparison at challenge time.
+      expect(() => validate({ condition: "> 1000" })).not.toThrow();
+      expect(() => validate({ condition: ">  1000  " })).not.toThrow();
+    });
+
+    it("rejects a padded ordering comparison whose value is still non-numeric", () => {
+      expect(() => validate({ condition: "> one thousand" })).toThrow(
+        /against a non-numeric value/
+      );
     });
 
     it("accepts the ordering comparisons", () => {

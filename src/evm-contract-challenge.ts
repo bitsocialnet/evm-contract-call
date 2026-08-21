@@ -143,8 +143,20 @@ const chainsByTicker: Record<string, Chain> = {
 
 const knownChainTickers = Object.keys(chainsByTicker);
 
-const getChainFromTicker = (chainTicker: string): Chain | undefined =>
-  chainsByTicker[chainTicker.trim().toLowerCase()];
+const normalizeChainTicker = (chainTicker: string): string =>
+  chainTicker.trim().toLowerCase();
+
+// hasOwnProperty rather than a bare index: chainsByTicker is an object literal, so a chainTicker of
+// "constructor", "toString" or "valueOf" would otherwise resolve to an inherited function. That would
+// read as "this ticker has a built-in RPC", letting validateChallengeSettings accept it without
+// rpcUrls and handing createPublicClient something that is not a Chain.
+const getChainFromTicker = (chainTicker: string): Chain | undefined => {
+  const ticker = normalizeChainTicker(chainTicker);
+
+  return Object.prototype.hasOwnProperty.call(chainsByTicker, ticker)
+    ? chainsByTicker[ticker]
+    : undefined;
+};
 
 const parseRpcUrls = (rpcUrls: string | undefined): string[] =>
   (rpcUrls ?? "")
@@ -206,8 +218,10 @@ const createViemClient = (
     );
   }
 
-  return getCachedViemClient(`call\n${chainTicker}\n${urls.join(",")}`, () =>
-    createPublicClient({ chain, transport: createTransport(urls) })
+  return getCachedViemClient(
+    `call\n${normalizeChainTicker(chainTicker)}\n${urls.join(",")}`,
+    () =>
+      createPublicClient({ chain, transport: createTransport(urls) })
   );
 };
 
@@ -510,7 +524,7 @@ const parseCondition = (condition: string): {
     );
   }
 
-  const valueInCondition = condition.split(operatorInCondition)[1] ?? "";
+  const valueInCondition = condition.slice(operatorInCondition.length).trim();
   return {
     operator: operatorInCondition,
     value: valueInCondition
@@ -535,7 +549,10 @@ const validateConditionOption = (condition: string): void => {
     );
   }
 
-  const value = condition.slice(operator.length).trim();
+  // Extracted with parseCondition rather than re-parsed here, so the hook can never bless a value the
+  // challenge then reads differently. When these two drifted, "> 1000" validated as numeric and ran as
+  // a String() comparison, which a balance of "99" satisfies.
+  const { value } = parseCondition(condition);
 
   if (value === "") {
     throw new Error(

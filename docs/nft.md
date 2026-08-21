@@ -63,7 +63,7 @@ const getNftImageUrl = async (nft) => {
 const getNftMessageToSign = (authorAddress, timestamp, tokenAddress, tokenId) => {
   // use plain JSON so the user can read what he's signing
   // property names must always be in this order for signature to match so don't use JSON.stringify
-  return `{"domainSeparator":"pkc-author-avatar","authorAddress":"${authorAddress}","timestamp":${timestamp},"tokenAddress":"${tokenAddress}","tokenId":"${tokenId}"}`
+  return `{"domainSeparator":"plebbit-author-avatar","authorAddress":"${authorAddress}","timestamp":${timestamp},"tokenAddress":"${tokenAddress}","tokenId":"${tokenId}"}`
 }
 
 const createNftSignature = async (nft, authorAddress, account) => {
@@ -84,7 +84,7 @@ const verifyNftSignature = async (nft, authorAddress) => {
   const messageThatShouldBeSigned = getNftMessageToSign(authorAddress, nft.timestamp, nft.address, nft.id)
   const signatureAddress = await recoverMessageAddress({
     message: messageThatShouldBeSigned,
-    signature: nft.signature
+    signature: nft.signature.signature
   })
   if (currentNftOwnerAddress.toLowerCase() !== signatureAddress.toLowerCase()) {
     throw Error(`invalid nft signature address '${signatureAddress}' does not equal '${currentNftOwnerAddress}'`)
@@ -118,7 +118,8 @@ const author = {
   const account = privateKeyToAccount(testPrivateKey)
 
   const signature = await createNftSignature(avatarNft, author.address, account)
-  const nftWithSignature = { ...avatarNft, signature }
+  // pkc-js types the avatar signature as an object, and the challenge reads signature.signature
+  const nftWithSignature = { ...avatarNft, signature: { signature, type: 'eip191' } }
   console.log({ nftWithSignature })
 
   try {

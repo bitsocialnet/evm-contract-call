@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyMessage } from "viem";
+import { encodeAbiParameters, verifyMessage } from "viem";
 import { mainnet, polygon } from "viem/chains";
 import {
   generatePrivateKey,
@@ -53,6 +54,13 @@ const HIGH_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000865a0735887d15fcf91fa302" as HexAddress;
 const ZERO_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as HexAddress;
+// Exactly 1000, so a "=1000" condition turns on the parsed value alone rather than on the margin.
+const EXACT_1000_BALANCE_DATA =
+  "0x00000000000000000000000000000000000000000000000000000000000003e8" as HexAddress;
+// The condition value can be a string when the contract returns one, which is the only place the
+// difference between splitting on the operator and slicing past it is observable.
+const STRING_ABI_JSON =
+  '{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"tierOf","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"}';
 const DEFAULT_AUTHOR_ADDRESS = "author-address";
 const DEFAULT_RPC_URLS = "https://eth.example";
 
@@ -459,6 +467,78 @@ describe("evmContractChallenge", () => {
     ).rejects.toThrow("Condition uses unsupported comparison operator");
   });
 
+  it("compares a whitespace-padded ordering condition numerically", async () => {
+    // parseCondition used to keep the space, making isNumericConditionValue false and the comparison
+    // a String() one, where "0" > " 1000". validateChallengeSettings trimmed before its numeric check,
+    // so it accepted exactly the condition it exists to reject.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: ">  1000" })
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still passes a padded ordering condition when the balance is over it", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: "> 1000" })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("compares a whitespace-padded equality condition against the trimmed value", async () => {
+    // The ordering operators are not the only ones the untrimmed value broke: "= 1000" compared
+    // String(1000n) against " 1000", so an exactly-matching balance failed its own condition.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: EXACT_1000_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: "= 1000" })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("keeps the operator character inside a condition value", async () => {
+    // parseCondition used to split on the operator and take element [1], so "=a=b" asked for "a".
+    // Slicing past the operator once is what validateConditionOption always did.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({
+          data: encodeAbiParameters([{ type: "string" }], ["a=b"]) as HexAddress
+        })
+      }),
+      settings: createChallengeSettings({
+        abi: STRING_ABI_JSON,
+        condition: "=a=b"
+      })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
   it("passes when rpcUrls is omitted, using the chain's built-in RPC", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
@@ -648,6 +728,104 @@ describe("evmContractChallenge", () => {
         }
       })
     ).rejects.toThrow(/option rpcUrls is required for chainTicker "notachain"/);
+  });
+
+  // docs/nft.md is the guide a client follows to build an avatar payload, and nothing executed it, so
+  // it drifted from the verifier: it signed a "pkc-author-avatar" separator and stored the signature
+  // as a bare string, neither of which this challenge can read. These tests run the guide's own code
+  // against the real verification path so the two cannot separate again silently.
+  describe("docs/nft.md", () => {
+    const docSource = readFileSync(
+      new URL("../docs/nft.md", import.meta.url),
+      "utf8"
+    );
+
+    // The template is lifted out of the markdown rather than retyped, so a test copy cannot stay
+    // correct while the guide a reader actually follows is wrong.
+    const docMessageTemplate = (): string => {
+      const match = docSource.match(
+        /const getNftMessageToSign = [^\n]*\n(?:[^\n]*\n)*?\s*return (`\{"domainSeparator".*?`)\n/
+      );
+
+      if (!match?.[1]) {
+        throw new Error(
+          "could not find the getNftMessageToSign template in docs/nft.md"
+        );
+      }
+
+      return match[1];
+    };
+
+    const buildDocMessage = (params: {
+      authorAddress: string;
+      timestamp: number;
+      tokenAddress: string;
+      tokenId: string;
+    }): string =>
+      new Function(
+        "authorAddress",
+        "timestamp",
+        "tokenAddress",
+        "tokenId",
+        `return ${docMessageTemplate()}`
+      )(
+        params.authorAddress,
+        params.timestamp,
+        params.tokenAddress,
+        params.tokenId
+      ) as string;
+
+    it("signs the same message the challenge verifies, byte for byte", () => {
+      const params = {
+        authorAddress: DEFAULT_AUTHOR_ADDRESS,
+        timestamp: 1_700_000_000,
+        tokenAddress: TOKEN_ADDRESS,
+        tokenId: "5404"
+      };
+
+      expect(buildDocMessage(params)).toBe(createAvatarMessage(params));
+    });
+
+    it("produces an avatar payload the challenge accepts", async () => {
+      const timestamp = Math.round(Date.now() / 1000);
+      const tokenId = "5404";
+
+      const signature = await account.signMessage({
+        message: buildDocMessage({
+          authorAddress: DEFAULT_AUTHOR_ADDRESS,
+          timestamp,
+          tokenAddress: TOKEN_ADDRESS,
+          tokenId
+        })
+      });
+
+      const result = await executeChallenge({
+        publication: createPublication({
+          avatar: {
+            address: TOKEN_ADDRESS,
+            chainTicker: "matic",
+            id: tokenId,
+            timestamp,
+            // The nesting docs/nft.md now writes. A bare string here is what pkc-js rejects and what
+            // verifyAuthorNftWalletAddress reads through as signature.signature.
+            signature: { signature, type: "eip191" }
+          } as unknown as AuthorAvatar
+        }),
+        mockClient: createClient({
+          verifyMessage,
+          readContract: async () => account.address,
+          call: async () => ({ data: HIGH_BALANCE_DATA })
+        })
+      });
+
+      expect(result).toEqual({ success: true });
+    });
+
+    it("stores and reads the signature through the nested shape", () => {
+      expect(docSource).toContain("signature: { signature");
+      expect(docSource).toContain("signature: nft.signature.signature");
+      expect(docSource).not.toMatch(/signature: nft\.signature\b(?!\.)/);
+    });
   });
 
   describe("ABI validation", () => {

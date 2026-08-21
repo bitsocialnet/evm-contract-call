@@ -99,6 +99,27 @@ describe("createViemClient", () => {
     );
   });
 
+  it("keys the cache on the normalized ticker, not the raw one", () => {
+    // The chain is looked up with trim().toLowerCase(); when the cache key was not, "ETH", " eth "
+    // and "eth" each built their own client for the same chain, and each extra client with several
+    // rpcUrls adds another ranking interval this cache exists to avoid.
+    const client = createViemClient(MAINNET_RPC, "eth");
+
+    expect(createViemClient(MAINNET_RPC, "ETH")).toBe(client);
+    expect(createViemClient(MAINNET_RPC, " Eth ")).toBe(client);
+  });
+
+  it("does not treat an inherited object key as a ticker with a built-in RPC", () => {
+    // chainsByTicker is an object literal, so a bare index lookup answers "constructor" with a
+    // function, which would pass the built-in-RPC check and reach createPublicClient as the chain.
+    for (const ticker of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(getChainFromTicker(ticker)).toBeUndefined();
+      expect(() => createViemClient(undefined, ticker)).toThrow(
+        /option rpcUrls is required/
+      );
+    }
+  });
+
   it("does not share a client between different chains or rpcUrls", () => {
     expect(createViemClient(MAINNET_RPC, "eth")).not.toBe(
       createViemClient(MAINNET_RPC, "matic")
