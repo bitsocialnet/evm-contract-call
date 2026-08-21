@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.5](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.4...v0.1.5) (2026-08-21)
+
+### Features
+
+* validate challenge settings on edit instead of per author ([0906703](https://github.com/bitsocialnet/evm-contract-challenge/commit/09067032c7986ae0fa60f38ba6dcffb9fa5c48fa))
+
+### Bug Fixes
+
+* give the viem client a chain so rpcUrls and ENS work ([72c6e99](https://github.com/bitsocialnet/evm-contract-challenge/commit/72c6e9942ad0f63a9e1ceda459f2174991200faf))
+* make the settings hook and the challenge parse a condition the same way ([05105a2](https://github.com/bitsocialnet/evm-contract-challenge/commit/05105a2d471d5c76918ccdd3b282333c8f5f86ec)), closes [#2](https://github.com/bitsocialnet/evm-contract-challenge/issues/2)
+
 ## [0.1.4](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.3...v0.1.4) (2026-04-24)
 
 ## [0.1.3](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.2...v0.1.3) (2026-04-11)
