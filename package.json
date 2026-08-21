@@ -55,15 +55,6 @@
     "typescript": "5.9.3",
     "vitest": "4.1.11"
   },
-  "overrides": {
-    "js-yaml@^4": "4.3.1",
-    "brace-expansion@^1": "1.1.18",
-    "@pkcprotocol/pkc-js": {
-      "ws@^8": "8.21.3",
-      "uuid@^13": "13.0.1",
-      "undici@^7": "7.29.0"
-    }
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bitsocialnet/evm-contract-challenge.git"
