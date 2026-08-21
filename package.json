@@ -59,9 +59,9 @@
     "js-yaml@^4": "4.3.1",
     "brace-expansion@^1": "1.1.18",
     "@pkcprotocol/pkc-js": {
-      "ws": "8.21.3",
-      "uuid": "13.0.1",
-      "undici": "7.29.0"
+      "ws@^8": "8.21.3",
+      "uuid@^13": "13.0.1",
+      "undici@^7": "7.29.0"
     }
   },
   "repository": {
