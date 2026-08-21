@@ -139,20 +139,80 @@ Each example uses a read-only contract function that takes a single `address` ar
 | At least 10 MATIC on Polygon | `matic` | `0x0000000000000000000000000000000000001010` | [`balanceOf`](#balanceof-abi) | `>10000000000000000000` |
 | Any stETH balance (Lido staked ETH) | `eth` | `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | [`balanceOf`](#balanceof-abi) | `>0` |
 
-> For chains other than Ethereum mainnet (e.g. Optimism, Polygon), you will also need to set `rpcUrls` to one or more JSON-RPC endpoints for that chain.
+> Setting `rpcUrls` is recommended on every chain, including Ethereum mainnet. See [Challenge Options](#challenge-options).
 
 ## Challenge Options
 
 All option values must be strings.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `chainTicker` | `"eth"` | The chain ticker (e.g. `eth`, `matic`) |
-| `rpcUrls` | — | Comma-separated JSON-RPC URLs for the chain (uses viem defaults if omitted) |
-| `address` | *(required)* | The contract address to call |
-| `abi` | *(required)* | The ABI of the contract method as a JSON object (not an array) |
-| `condition` | *(required)* | Condition the return value must pass (`=`, `>`, or `<` followed by a value, e.g. `>1000`) |
-| `error` | `"Contract call response doesn't pass condition."` | Custom error message shown when the condition fails |
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `chainTicker` | yes | `"eth"` | The chain ticker (e.g. `eth`, `matic`) |
+| `rpcUrls` | see below | — | Comma-separated JSON-RPC URLs for the chain |
+| `address` | yes | — | The contract address to call |
+| `abi` | yes | — | The ABI of the contract method as a JSON object (not an array) |
+| `condition` | yes | — | Condition the return value must pass (`=`, `>`, or `<` followed by a value, e.g. `>1000`) |
+| `error` | no | `"Contract call response doesn't pass condition."` | Custom error message shown when the condition fails |
+
+### When `rpcUrls` is required
+
+`rpcUrls` is **required unless `chainTicker` is one of the tickers below**, which have a built-in RPC endpoint:
+
+`eth`, `matic` / `pol`, `op`, `arb`, `base`, `avax`, `bnb` / `bsc`, `gno` / `xdai`, `celo`, `ftm`, `linea`, `scroll`, `zksync`, `blast`
+
+Setting it is still **recommended even for those**: the built-in endpoints are shared public RPCs and will rate-limit a busy community, which shows up as authors being rejected at random rather than as an obvious failure.
+
+An unsupported ticker with no `rpcUrls` is rejected when you save the challenge settings, rather than failing later for every author who tries to publish.
+
+## Publishing Options
+
+`community.settings.challenges[i].options` is private. Nothing in it is published unless you name the option in `publicOptions`, which copies it into the public `community.challenges[i].publicOptions` record.
+
+**Recommended: publish everything except `rpcUrls`.**
+
+```ts
+await community.edit({
+  settings: {
+    challenges: [
+      {
+        name: "@bitsocial/evm-contract-challenge",
+        options: {
+          /* ... */
+        },
+        publicOptions: ["chainTicker", "address", "abi", "condition", "error"]
+      }
+    ]
+  }
+});
+```
+
+| Option | Publish? | Why |
+|--------|----------|-----|
+| `chainTicker` | recommended | Already public in effect — the challenge's `type` is `chain/<chainTicker>` |
+| `address` | recommended | A contract address is public on-chain data; hiding it buys no security |
+| `abi` | recommended | The signature of a public method on that contract |
+| `condition` | recommended | The threshold that makes the other three actionable |
+| `error` | recommended | Authors see this string anyway when they fail |
+| `rpcUrls` | **never — refused** | RPC URLs commonly embed a provider API key |
+
+Published together, `chainTicker` + `address` + `abi` + `condition` let a client tell an author exactly what they are missing *before* they publish and burn a challenge attempt. Published partially, none of that works, so treat the four as one unit.
+
+Keeping them private is a legitimate choice — you may not want the exact threshold known — and this package will not stop you. `rpcUrls` is the one exception: naming it in `publicOptions` is refused outright, because publishing a URL like `https://eth-mainnet.g.alchemy.com/v2/<KEY>` leaks a paid credential to everyone, permanently, and no client ever uses these endpoints. Only the community node does.
+
+## Settings Validation
+
+The challenge validates its own settings whenever you create a community, edit one, or start one, via pkc-js's `validateChallengeSettings` hook. A bad setting is rejected as a failed edit instead of silently rejecting every author at publish time.
+
+Rejected settings:
+
+- `publicOptions` naming `rpcUrls`
+- `rpcUrls` entries that are not valid URLs, or that do not use `http:` / `https:`
+- `rpcUrls` omitted for a `chainTicker` with no built-in RPC
+- `address` that is not a well-formed EVM address
+- `abi` that is not valid JSON, or not a single function entry taking one `address` and returning at least one value
+- `condition` with no supported operator (`=`, `>`, `<`), no value after the operator, or an ordering comparison against a non-numeric value (e.g. `>abc`, which would otherwise compare as text)
+
+pkc-js additionally rejects an option name that no option above declares, and any required option left unset, before this challenge's own validation runs.
 
 ## Multiple RPC URLs
 
@@ -168,7 +228,7 @@ When multiple URLs are provided, viem's [`fallback`](https://viem.sh/docs/client
 - If a request fails, it automatically falls back to the next endpoint
 - viem periodically pings all endpoints in the background and reorders them by latency and stability
 - A single URL works the same as before (no fallback overhead)
-- If `rpcUrls` is omitted, viem's built-in default RPCs are used
+- If `rpcUrls` is omitted, the chain's built-in RPC is used, which requires a supported `chainTicker` (see [When `rpcUrls` is required](#when-rpcurls-is-required))
 
 This improves reliability — if one RPC provider goes down, the challenge automatically uses the next available endpoint.
 

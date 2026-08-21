@@ -4,6 +4,7 @@ import {
   encodeFunctionData,
   fallback,
   http,
+  isAddress,
   type AbiFunction,
   type Chain,
   type PublicClient,
@@ -50,7 +51,9 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     option: "rpcUrls",
     label: "RPC URLs",
     default: "",
-    description: "Comma-separated JSON-RPC URLs for the chain.",
+    description:
+      "Comma-separated JSON-RPC URLs for the chain. Optional for a chainTicker with a built-in RPC, " +
+      "required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited.",
     placeholder: "https://eth.llamarpc.com,https://rpc.ankr.com/eth"
   },
   {
@@ -116,7 +119,8 @@ type ConditionComparable = bigint | string;
 // chainTicker is free-form in pkc-js (ChainTickerSchema is z.string().min(1)), so this map is ours to
 // own and will always be partial. It is not a convenience: viem's http() transport has no default RPC
 // unless the client is given a chain, and it throws UrlRequiredError at construction rather than
-// falling back to anything. A ticker outside this map therefore has no default and must ship rpcUrls.
+// falling back to anything. A ticker outside this map therefore has no default and must ship rpcUrls,
+// which is what validateChallengeSettings turns into a rejected edit instead of a per-author failure.
 const chainsByTicker: Record<string, Chain> = {
   eth: mainnet,
   matic: polygon,
@@ -192,8 +196,9 @@ const createViemClient = (
   const urls = parseRpcUrls(rpcUrls);
   const chain = getChainFromTicker(chainTicker);
 
-  // viem's own UrlRequiredError says nothing about which option the owner has to fix, and it is
-  // raised per author at publish time rather than against the setting that caused it.
+  // Same condition validateChallengeSettings rejects an edit on. Repeated here because getChallenge
+  // also runs for settings written before the hook existed, and because viem's own UrlRequiredError
+  // says nothing about which option the owner has to fix.
   if (urls.length === 0 && !chain) {
     throw new Error(
       `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
@@ -512,6 +517,43 @@ const parseCondition = (condition: string): {
   };
 };
 
+// Whether evaluateConditionString will compare as bigints or as strings. A condition value of all
+// digits is numeric; anything else falls back to a string comparison.
+const isNumericConditionValue = (value: string): boolean => /^\d+$/.test(value);
+
+// The settings-time counterpart of parseCondition, with messages naming the option rather than
+// describing the parser's internals.
+const validateConditionOption = (condition: string): void => {
+  const operator = supportedConditionOperators.find((supportedOperator) =>
+    condition.startsWith(supportedOperator)
+  );
+
+  if (!operator) {
+    throw new Error(
+      `option condition must start with one of ${supportedConditionOperators.join(", ")} ` +
+        `(e.g. ">1000"), got "${condition}"`
+    );
+  }
+
+  const value = condition.slice(operator.length).trim();
+
+  if (value === "") {
+    throw new Error(
+      `option condition "${condition}" has no value after the "${operator}" operator`
+    );
+  }
+
+  // "=" against a string return value is a legitimate check. Ordering operators are not: a non-numeric
+  // value makes evaluateConditionString compare with String(), so ">100" against a value of "99" would
+  // pass on lexicographic order. That is always a misconfiguration rather than an intent.
+  if (operator !== "=" && !isNumericConditionValue(value)) {
+    throw new Error(
+      `option condition "${condition}" compares with "${operator}" against a non-numeric value ` +
+        `"${value}". Ordering comparisons need an unsigned integer, e.g. ">1000".`
+    );
+  }
+};
+
 const toComparableValue = (
   value: unknown,
   numeric: boolean
@@ -529,7 +571,7 @@ const evaluateConditionString = (
 ): boolean => {
   const parsedCondition = parseCondition(condition);
 
-  const isNumericCondition = /^\d+$/.test(parsedCondition.value);
+  const isNumericCondition = isNumericConditionValue(parsedCondition.value);
   const conditionValueParsed = toComparableValue(
     parsedCondition.value,
     isNumericCondition
@@ -654,6 +696,81 @@ const parseChallengeAbi = (abi: string): Record<string, unknown> => {
   return obj;
 };
 
+// Semantic validation of the owner's settings, run by pkc-js on every edit, community creation and
+// community start. Core already enforces what optionInputs describes (undeclared keys, missing
+// required options, publicOptions naming an option that does not exist), so everything here is a check
+// only this package can make. Sync and no network on purpose: it runs on every community start, so an
+// RPC reachability check here would turn a provider outage into a startup failure. That check belongs
+// in getChallenge, where an outage costs one publish.
+//
+// Every rejection below currently surfaces as a per-author challenge failure at publish time, which is
+// the wrong audience: the author cannot fix the community's ABI.
+const validateChallengeSettings = ({
+  challengeSettings
+}: {
+  challengeSettings: CommunityChallengeSetting;
+}): void => {
+  const options = challengeSettings.options ?? {};
+  const { chainTicker, address, abi, condition, rpcUrls } = options;
+
+  // Publication is the owner's call for every option but this one. RPC URLs routinely carry a provider
+  // API key in the path (https://eth-mainnet.g.alchemy.com/v2/<KEY>), the published record is public and
+  // permanent, and no client needs them anyway since the community node is what makes the contract call.
+  // A leak with no upside is not a policy choice, so it is refused rather than left to the owner.
+  if (challengeSettings.publicOptions?.includes("rpcUrls")) {
+    throw new Error(
+      "rpcUrls cannot be listed in publicOptions: RPC URLs commonly embed a provider API key, " +
+        "and publishing one exposes it to everyone. Clients never use these endpoints, only the community node does."
+    );
+  }
+
+  for (const url of parseRpcUrls(rpcUrls)) {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      throw new Error(`option rpcUrls contains an entry that is not a valid URL: "${url}"`);
+    }
+
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+      throw new Error(
+        `option rpcUrls entry "${url}" must use http: or https:, got "${parsedUrl.protocol}"`
+      );
+    }
+  }
+
+  // Without a ticker viem has no built-in RPC to fall back on, and every call throws UrlRequiredError
+  // before it is even sent. chainTicker is `required` so core has already rejected a missing one; this
+  // only covers a ticker that is set but not one this package can map to a chain.
+  if (
+    chainTicker !== undefined &&
+    parseRpcUrls(rpcUrls).length === 0 &&
+    !getChainFromTicker(chainTicker)
+  ) {
+    throw new Error(
+      `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
+        `Tickers with a built-in RPC are: ${knownChainTickers.join(", ")}.`
+    );
+  }
+
+  // strict: false because checksum casing is not what makes an address usable here, and an owner who
+  // pastes a lowercased address from a block explorer has not made a mistake worth blocking an edit for.
+  if (address !== undefined && !isAddress(address, { strict: false })) {
+    throw new Error(
+      `option address is not a valid EVM address: "${address}". It must be 0x followed by 40 hex characters.`
+    );
+  }
+
+  // Same parser getChallenge uses, so an ABI accepted here cannot be rejected at challenge time.
+  if (abi !== undefined) {
+    parseChallengeAbi(abi);
+  }
+
+  if (condition !== undefined) {
+    validateConditionOption(condition);
+  }
+};
+
 const getChallenge = async ({
   challengeSettings,
   challengeRequestMessage,
@@ -728,7 +845,13 @@ function evmContractChallenge({
 }): ChallengeFileInput {
   const chainTicker = challengeSettings?.options?.chainTicker;
   const type = `chain/${chainTicker || "eth"}` as ChallengeInput["type"];
-  return { getChallenge, optionInputs, type, description };
+  return {
+    getChallenge,
+    optionInputs,
+    type,
+    description,
+    validateChallengeSettings
+  };
 }
 
 // createViemClient/createEnsViemClient/getChainFromTicker are exported for the tests only: index.ts
@@ -736,6 +859,7 @@ function evmContractChallenge({
 export {
   description,
   optionInputs,
+  validateChallengeSettings,
   createViemClient,
   createEnsViemClient,
   getChainFromTicker,
