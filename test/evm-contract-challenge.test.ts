@@ -1,11 +1,15 @@
+import { readFileSync } from "node:fs";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyMessage } from "viem";
+import { encodeAbiParameters, verifyMessage } from "viem";
+import { mainnet, polygon } from "viem/chains";
 import {
   generatePrivateKey,
   privateKeyToAccount,
   type PrivateKeyAccount
 } from "viem/accounts";
-import evmContractChallenge from "../src/evm-contract-challenge.js";
+import evmContractChallenge, {
+  _clearViemClientCache
+} from "../src/evm-contract-challenge.js";
 import type {
   ChallengeResultInput,
   GetChallengeArgsInput,
@@ -28,11 +32,17 @@ vi.mock("viem", async () => {
   const actual = await vi.importActual<typeof import("viem")>("viem");
   return {
     ...actual,
-    createPublicClient: () => currentMockClient
+    createPublicClient: (args: { chain?: { id: number } }) => {
+      createPublicClientArgs.push(args);
+      return currentMockClient;
+    }
   };
 });
 
 let currentMockClient: MockViemClient;
+// Recorded so the tests can assert on the client viem was asked to build, not just on the mock that
+// comes back. Passing a chain is what gives http() a default RPC and what lets getEnsAddress run.
+const createPublicClientArgs: Array<{ chain?: { id: number } }> = [];
 
 const CONTRACT_ADDRESS =
   "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f" as const;
@@ -44,6 +54,13 @@ const HIGH_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000865a0735887d15fcf91fa302" as HexAddress;
 const ZERO_BALANCE_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as HexAddress;
+// Exactly 1000, so a "=1000" condition turns on the parsed value alone rather than on the margin.
+const EXACT_1000_BALANCE_DATA =
+  "0x00000000000000000000000000000000000000000000000000000000000003e8" as HexAddress;
+// The condition value can be a string when the contract returns one, which is the only place the
+// difference between splitting on the operator and slicing past it is observable.
+const STRING_ABI_JSON =
+  '{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"tierOf","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"}';
 const DEFAULT_AUTHOR_ADDRESS = "author-address";
 const DEFAULT_RPC_URLS = "https://eth.example";
 
@@ -63,8 +80,10 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  // Clear the viem client cache between tests by resetting the mock module
-  vi.resetModules;
+  // Clients are cached per (chainTicker, rpcUrls), so without this every test after the first would
+  // keep the first test's mock client instead of its own.
+  _clearViemClientCache();
+  createPublicClientArgs.length = 0;
 });
 
 const createChallengeSettings = (
@@ -94,13 +113,16 @@ const createClient = (overrides: Partial<MockViemClient> = {}): MockViemClient =
 };
 
 const createCommunity = (params: {
-  resolveAuthorName?: (args: { address: string }) => Promise<string | null>;
+  resolveAuthorName?: (args: {
+    name: string;
+  }) => Promise<{ resolvedAuthorName: string | null }>;
 } = {}) => {
   const storage = new Map<string, unknown>();
 
   const pkc = {
     resolveAuthorName:
-      params.resolveAuthorName ?? (async ({ address }: { address: string }) => address),
+      params.resolveAuthorName ??
+      (async ({ name }: { name: string }) => ({ resolvedAuthorName: name })),
     _createStorageLRU: async () => ({
       getItem: async (key: string) => storage.get(key),
       setItem: async (key: string, value: unknown) => {
@@ -116,13 +138,18 @@ const createPublication = (params: {
   authorAddress?: string;
   wallet?: AuthorWallet;
   avatar?: AuthorAvatar;
+  // The wallet is looked up as author.wallets[chainTicker], so a test using a non-default chainTicker
+  // has to register the wallet under that ticker or the wallet check returns early.
+  walletChainTicker?: string;
 }): PublicationWithCommunityAuthorFromDecryptedChallengeRequest => {
   const authorAddress = params.authorAddress ?? DEFAULT_AUTHOR_ADDRESS;
 
   return {
     author: {
       address: authorAddress,
-      ...(params.wallet ? { wallets: { eth: params.wallet } } : {}),
+      ...(params.wallet
+        ? { wallets: { [params.walletChainTicker ?? "eth"]: params.wallet } }
+        : {}),
       ...(params.avatar ? { avatar: params.avatar } : {})
     },
     signature: { type: "ed25519", signature: "", publicKey: "mock-public-key", signedPropertyNames: [] }
@@ -196,9 +223,10 @@ const executeChallenge = async (params: {
   publication: PublicationWithCommunityAuthorFromDecryptedChallengeRequest;
   settings?: CommunityChallengeSetting;
   mockClient: MockViemClient;
+  community?: ReturnType<typeof createCommunity>;
 }): Promise<ChallengeResultInput> => {
   const settings = params.settings ?? createChallengeSettings();
-  const community = createCommunity();
+  const community = params.community ?? createCommunity();
 
   currentMockClient = params.mockClient;
 
@@ -439,7 +467,79 @@ describe("evmContractChallenge", () => {
     ).rejects.toThrow("Condition uses unsupported comparison operator");
   });
 
-  it("passes when rpcUrls is omitted (uses viem defaults)", async () => {
+  it("compares a whitespace-padded ordering condition numerically", async () => {
+    // parseCondition used to keep the space, making isNumericConditionValue false and the comparison
+    // a String() one, where "0" > " 1000". validateChallengeSettings trimmed before its numeric check,
+    // so it accepted exactly the condition it exists to reject.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: ">  1000" })
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still passes a padded ordering condition when the balance is over it", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: "> 1000" })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("compares a whitespace-padded equality condition against the trimmed value", async () => {
+    // The ordering operators are not the only ones the untrimmed value broke: "= 1000" compared
+    // String(1000n) against " 1000", so an exactly-matching balance failed its own condition.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: EXACT_1000_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ condition: "= 1000" })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("keeps the operator character inside a condition value", async () => {
+    // parseCondition used to split on the operator and take element [1], so "=a=b" asked for "a".
+    // Slicing past the operator once is what validateConditionOption always did.
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({
+          data: encodeAbiParameters([{ type: "string" }], ["a=b"]) as HexAddress
+        })
+      }),
+      settings: createChallengeSettings({
+        abi: STRING_ABI_JSON,
+        condition: "=a=b"
+      })
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("passes when rpcUrls is omitted, using the chain's built-in RPC", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
     const mockClient = createClient({
@@ -468,6 +568,264 @@ describe("evmContractChallenge", () => {
     });
 
     expect(file.type).toBe("chain/matic");
+  });
+
+  it("rejects a domain wallet address whose name record resolves elsewhere", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+    // author.wallets[chainTicker].address may be a domain rather than a 0x address, in which case its
+    // pkc-author-address record has to resolve to the publication signer.
+    const domainWallet = { ...wallet, address: "wallet-owner.eth" } as typeof wallet;
+    const resolveAuthorNameCalls: Array<{ name: string }> = [];
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet: domainWallet }),
+      mockClient: createClient({
+        verifyMessage: async () => true,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      community: createCommunity({
+        resolveAuthorName: async (args) => {
+          resolveAuthorNameCalls.push(args);
+          return { resolvedAuthorName: "someone-else" };
+        }
+      })
+    });
+
+    // pkc-js 0.0.85 takes { name } and returns { resolvedAuthorName }, not an address and a bare string.
+    expect(resolveAuthorNameCalls).toEqual([{ name: "wallet-owner.eth" }]);
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "walletFailureReason='The author wallet address's pkc-author-address text record should resolve to the public key of the signature'"
+    );
+  });
+
+  it("rejects a domain wallet address that does not resolve at all", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+    const domainWallet = { ...wallet, address: "wallet-owner.eth" } as typeof wallet;
+
+    const result = await executeChallenge({
+      publication: createPublication({ wallet: domainWallet }),
+      mockClient: createClient({
+        verifyMessage: async () => true,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      community: createCommunity({
+        resolveAuthorName: async () => ({ resolvedAuthorName: null })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "walletFailureReason='The author wallet address's pkc-author-address text record should resolve to the public key of the signature'"
+    );
+  });
+
+  it("builds the contract-call client with the chain the chainTicker names", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    await executeChallenge({
+      publication: createPublication({ wallet, walletChainTicker: "matic" }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ chainTicker: "matic" })
+    });
+
+    // Without a chain, viem's http() has no default RPC and throws UrlRequiredError at construction.
+    expect(createPublicClientArgs.length).toBeGreaterThan(0);
+    for (const args of createPublicClientArgs) {
+      expect(args.chain?.id).toBe(polygon.id);
+    }
+  });
+
+  it("resolves ENS against mainnet even when the contract call targets another chain", async () => {
+    await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => account.address,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ chainTicker: "matic" })
+    });
+
+    // ENS only exists on Ethereum mainnet, and viem refuses the lookup outright without a chain
+    // ("client chain not configured. universalResolverAddress is required").
+    expect(createPublicClientArgs.map((args) => args.chain?.id)).toContain(mainnet.id);
+  });
+
+  it("falls through to the NFT check when the ENS lookup throws", async () => {
+    const avatar = await signAvatarProof({ authorAddress: "plebbit.eth" });
+
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth", avatar }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => {
+          throw new Error("ENS provider is down");
+        },
+        readContract: async () => account.address,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      })
+    });
+
+    // A throwing ENS lookup used to propagate out of getChallenge, so the NFT check below it never ran
+    // and the author got an exception instead of a challenge result.
+    expect(result).toEqual({ success: true });
+  });
+
+  it("reports a failed ENS lookup as a challenge failure, not an exception", async () => {
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => {
+          throw new Error("ENS provider is down");
+        },
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "ensAuthorAddressFailureReason='Failed to resolve ENS address of author.address: ENS provider is down'"
+    );
+  });
+
+  it("reports an unresolvable ENS name as a challenge failure", async () => {
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => null,
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "ensAuthorAddressFailureReason='Failed to get owner of ENS address of author.address'"
+    );
+  });
+
+  it("throws a message naming rpcUrls when the chainTicker has no built-in RPC", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const { rpcUrls: _unused, ...optionsWithoutRpcUrls } = DEFAULT_OPTIONS;
+
+    await expect(
+      executeChallenge({
+        publication: createPublication({
+          wallet,
+          walletChainTicker: "notachain"
+        }),
+        mockClient: createClient({ verifyMessage }),
+        settings: {
+          name: "@bitsocial/evm-contract-challenge",
+          options: { ...optionsWithoutRpcUrls, chainTicker: "notachain" }
+        }
+      })
+    ).rejects.toThrow(/option rpcUrls is required for chainTicker "notachain"/);
+  });
+
+  // docs/nft.md is the guide a client follows to build an avatar payload, and nothing executed it, so
+  // it drifted from the verifier: it signed a "pkc-author-avatar" separator and stored the signature
+  // as a bare string, neither of which this challenge can read. These tests run the guide's own code
+  // against the real verification path so the two cannot separate again silently.
+  describe("docs/nft.md", () => {
+    const docSource = readFileSync(
+      new URL("../docs/nft.md", import.meta.url),
+      "utf8"
+    );
+
+    // The template is lifted out of the markdown rather than retyped, so a test copy cannot stay
+    // correct while the guide a reader actually follows is wrong.
+    const docMessageTemplate = (): string => {
+      const match = docSource.match(
+        /const getNftMessageToSign = [^\n]*\n(?:[^\n]*\n)*?\s*return (`\{"domainSeparator".*?`)\n/
+      );
+
+      if (!match?.[1]) {
+        throw new Error(
+          "could not find the getNftMessageToSign template in docs/nft.md"
+        );
+      }
+
+      return match[1];
+    };
+
+    const buildDocMessage = (params: {
+      authorAddress: string;
+      timestamp: number;
+      tokenAddress: string;
+      tokenId: string;
+    }): string =>
+      new Function(
+        "authorAddress",
+        "timestamp",
+        "tokenAddress",
+        "tokenId",
+        `return ${docMessageTemplate()}`
+      )(
+        params.authorAddress,
+        params.timestamp,
+        params.tokenAddress,
+        params.tokenId
+      ) as string;
+
+    it("signs the same message the challenge verifies, byte for byte", () => {
+      const params = {
+        authorAddress: DEFAULT_AUTHOR_ADDRESS,
+        timestamp: 1_700_000_000,
+        tokenAddress: TOKEN_ADDRESS,
+        tokenId: "5404"
+      };
+
+      expect(buildDocMessage(params)).toBe(createAvatarMessage(params));
+    });
+
+    it("produces an avatar payload the challenge accepts", async () => {
+      const timestamp = Math.round(Date.now() / 1000);
+      const tokenId = "5404";
+
+      const signature = await account.signMessage({
+        message: buildDocMessage({
+          authorAddress: DEFAULT_AUTHOR_ADDRESS,
+          timestamp,
+          tokenAddress: TOKEN_ADDRESS,
+          tokenId
+        })
+      });
+
+      const result = await executeChallenge({
+        publication: createPublication({
+          avatar: {
+            address: TOKEN_ADDRESS,
+            chainTicker: "matic",
+            id: tokenId,
+            timestamp,
+            // The nesting docs/nft.md now writes. A bare string here is what pkc-js rejects and what
+            // verifyAuthorNftWalletAddress reads through as signature.signature.
+            signature: { signature, type: "eip191" }
+          } as unknown as AuthorAvatar
+        }),
+        mockClient: createClient({
+          verifyMessage,
+          readContract: async () => account.address,
+          call: async () => ({ data: HIGH_BALANCE_DATA })
+        })
+      });
+
+      expect(result).toEqual({ success: true });
+    });
+
+    it("stores and reads the signature through the nested shape", () => {
+      expect(docSource).toContain("signature: { signature");
+      expect(docSource).toContain("signature: nft.signature.signature");
+      expect(docSource).not.toMatch(/signature: nft\.signature\b(?!\.)/);
+    });
   });
 
   describe("ABI validation", () => {

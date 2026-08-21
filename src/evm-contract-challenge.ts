@@ -4,9 +4,28 @@ import {
   encodeFunctionData,
   fallback,
   http,
+  isAddress,
   type AbiFunction,
-  type PublicClient
+  type Chain,
+  type PublicClient,
+  type Transport
 } from "viem";
+import {
+  arbitrum,
+  avalanche,
+  base,
+  blast,
+  bsc,
+  celo,
+  fantom,
+  gnosis,
+  linea,
+  mainnet,
+  optimism,
+  polygon,
+  scroll,
+  zksync
+} from "viem/chains";
 import { normalize } from "viem/ens";
 import type {
   ChallengeFileInput,
@@ -32,7 +51,9 @@ const optionInputs: NonNullable<ChallengeFileInput["optionInputs"]> = [
     option: "rpcUrls",
     label: "RPC URLs",
     default: "",
-    description: "Comma-separated JSON-RPC URLs for the chain.",
+    description:
+      "Comma-separated JSON-RPC URLs for the chain. Optional for a chainTicker with a built-in RPC, " +
+      "required otherwise. Recommended even when optional: the built-in RPC is shared and rate-limited.",
     placeholder: "https://eth.llamarpc.com,https://rpc.ankr.com/eth"
   },
   {
@@ -95,23 +116,129 @@ type SupportedConditionOperator =
 
 type ConditionComparable = bigint | string;
 
-const createViemClient = (rpcUrls?: string): PublicClient => {
-  const urls = (rpcUrls ?? "")
+// chainTicker is free-form in pkc-js (ChainTickerSchema is z.string().min(1)), so this map is ours to
+// own and will always be partial. It is not a convenience: viem's http() transport has no default RPC
+// unless the client is given a chain, and it throws UrlRequiredError at construction rather than
+// falling back to anything. A ticker outside this map therefore has no default and must ship rpcUrls,
+// which is what validateChallengeSettings turns into a rejected edit instead of a per-author failure.
+const chainsByTicker: Record<string, Chain> = {
+  eth: mainnet,
+  matic: polygon,
+  pol: polygon,
+  op: optimism,
+  arb: arbitrum,
+  base: base,
+  avax: avalanche,
+  bnb: bsc,
+  bsc: bsc,
+  gno: gnosis,
+  xdai: gnosis,
+  celo: celo,
+  ftm: fantom,
+  linea: linea,
+  scroll: scroll,
+  zksync: zksync,
+  blast: blast
+};
+
+const knownChainTickers = Object.keys(chainsByTicker);
+
+const normalizeChainTicker = (chainTicker: string): string =>
+  chainTicker.trim().toLowerCase();
+
+// hasOwnProperty rather than a bare index: chainsByTicker is an object literal, so a chainTicker of
+// "constructor", "toString" or "valueOf" would otherwise resolve to an inherited function. That would
+// read as "this ticker has a built-in RPC", letting validateChallengeSettings accept it without
+// rpcUrls and handing createPublicClient something that is not a Chain.
+const getChainFromTicker = (chainTicker: string): Chain | undefined => {
+  const ticker = normalizeChainTicker(chainTicker);
+
+  return Object.prototype.hasOwnProperty.call(chainsByTicker, ticker)
+    ? chainsByTicker[ticker]
+    : undefined;
+};
+
+const parseRpcUrls = (rpcUrls: string | undefined): string[] =>
+  (rpcUrls ?? "")
     .split(",")
     .map((u) => u.trim())
     .filter(Boolean);
 
-  const transport =
-    urls.length === 0
-      ? http()
-      : urls.length === 1
-        ? http(urls[0])
-        : fallback(
-            urls.map((u) => http(u)),
-            { rank: true }
-          );
+const createTransport = (urls: string[]): Transport =>
+  urls.length === 0
+    ? http()
+    : urls.length === 1
+      ? http(urls[0])
+      : fallback(
+          urls.map((u) => http(u)),
+          { rank: true }
+        );
 
-  return createPublicClient({ transport });
+// Clients are cached per (chainTicker, rpcUrls) rather than built per call. fallback(..., {rank: true})
+// starts a background interval that pings every endpoint to reorder them and is never torn down, and a
+// single challenge attempt builds a client for the wallet check, the ENS check, the NFT check and each
+// contract call. Without this cache every publish would leak several permanent timers, each polling the
+// owner's RPC endpoints for the life of the node.
+const viemClientCache = new Map<string, PublicClient>();
+
+// Test seam: the cache is keyed by config, so nothing invalidates it within a process. Tests that swap
+// the underlying client between cases need it emptied.
+const _clearViemClientCache = (): void => {
+  viemClientCache.clear();
+};
+
+const getCachedViemClient = (
+  cacheKey: string,
+  create: () => PublicClient
+): PublicClient => {
+  const cached = viemClientCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const client = create();
+  viemClientCache.set(cacheKey, client);
+  return client;
+};
+
+const createViemClient = (
+  rpcUrls: string | undefined,
+  chainTicker: string
+): PublicClient => {
+  const urls = parseRpcUrls(rpcUrls);
+  const chain = getChainFromTicker(chainTicker);
+
+  // Same condition validateChallengeSettings rejects an edit on. Repeated here because getChallenge
+  // also runs for settings written before the hook existed, and because viem's own UrlRequiredError
+  // says nothing about which option the owner has to fix.
+  if (urls.length === 0 && !chain) {
+    throw new Error(
+      `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
+        `Tickers with a built-in RPC are: ${knownChainTickers.join(", ")}.`
+    );
+  }
+
+  return getCachedViemClient(
+    `call\n${normalizeChainTicker(chainTicker)}\n${urls.join(",")}`,
+    () =>
+      createPublicClient({ chain, transport: createTransport(urls) })
+  );
+};
+
+// ENS names live on Ethereum mainnet, so a .eth/.bso lookup resolves there whatever chain the contract
+// call targets. The community's own rpcUrls are reused only when they already point at mainnet;
+// otherwise this falls back to viem's built-in mainnet RPC, which is shared and rate-limited. Without
+// an explicit chain viem refuses the lookup outright ("client chain not configured").
+const createEnsViemClient = (
+  rpcUrls: string | undefined,
+  chainTicker: string
+): PublicClient => {
+  const urls =
+    getChainFromTicker(chainTicker)?.id === mainnet.id ? parseRpcUrls(rpcUrls) : [];
+
+  return getCachedViemClient(`ens\n${urls.join(",")}`, () =>
+    createPublicClient({ chain: mainnet, transport: createTransport(urls) })
+  );
 };
 
 interface PKCWithOptionalAddressResolver extends PKC {
@@ -186,20 +313,20 @@ const verifyAuthorWalletAddress = async (
   }
 
   if (isStringDomain(authorWallet.address)) {
-    const resolvedWalletAddress = await props.pkc.resolveAuthorName({
-      address: authorWallet.address
+    const { resolvedAuthorName } = await props.pkc.resolveAuthorName({
+      name: authorWallet.address
     });
     const publicationSignatureAddress = await getPublicationSignerAddress(
       props.pkc,
       props.publication
     );
 
-    if (resolvedWalletAddress !== publicationSignatureAddress) {
+    if (resolvedAuthorName !== publicationSignatureAddress) {
       return "The author wallet address's pkc-author-address text record should resolve to the public key of the signature";
     }
   }
 
-  const viemClient = createViemClient(props.rpcUrls);
+  const viemClient = createViemClient(props.rpcUrls, props.chainTicker);
 
   const messageToBeSigned: Record<string, string | number> = {};
   messageToBeSigned.domainSeparator = "plebbit-author-wallet";
@@ -260,18 +387,26 @@ const verifyAuthorENSAddress = async (
 
   const ensAddress = normalizeEthAliasDomain(authorAddress);
 
-  const viemClient = createViemClient(props.rpcUrls);
+  const viemClient = createEnsViemClient(props.rpcUrls, props.chainTicker);
 
   if (typeof viemClient.getEnsAddress !== "function") {
-    throw new Error("Failed to get owner of ENS address of author.address");
+    return "Failed to get owner of ENS address of author.address";
   }
 
-  const ownerOfAddress = await viemClient.getEnsAddress({
-    name: normalize(ensAddress)
-  });
+  // A failure here is one of three sources of a wallet address, not the end of the challenge: an ENS
+  // lookup that throws must fall through to the NFT check the same way a non-.eth author does, so the
+  // reason is returned rather than thrown.
+  let ownerOfAddress: HexAddress | null | undefined;
+  try {
+    ownerOfAddress = await viemClient.getEnsAddress({
+      name: normalize(ensAddress)
+    });
+  } catch (e) {
+    return `Failed to resolve ENS address of author.address: ${e instanceof Error ? e.message : String(e)}`;
+  }
 
   if (!ownerOfAddress) {
-    throw new Error("Failed to get owner of ENS address of author.address");
+    return "Failed to get owner of ENS address of author.address";
   }
 
   const walletValidationFailure = await validateWalletAddressWithCondition({
@@ -296,7 +431,7 @@ const verifyAuthorNftWalletAddress = async (
 
   const nftAvatar = props.publication.author.avatar;
 
-  const viemClient = createViemClient(props.rpcUrls);
+  const viemClient = createViemClient(props.rpcUrls, props.chainTicker);
 
   let currentOwner: HexAddress;
   try {
@@ -351,7 +486,7 @@ const getContractCallResponse = async (props: {
   authorWalletAddress: string;
   rpcUrls: string | undefined;
 }): Promise<unknown> => {
-  const viemClient = createViemClient(props.rpcUrls);
+  const viemClient = createViemClient(props.rpcUrls, props.chainTicker);
 
   const encodedParameters = encodeFunctionData({
     abi: [props.abi as AbiFunction],
@@ -389,11 +524,51 @@ const parseCondition = (condition: string): {
     );
   }
 
-  const valueInCondition = condition.split(operatorInCondition)[1] ?? "";
+  const valueInCondition = condition.slice(operatorInCondition.length).trim();
   return {
     operator: operatorInCondition,
     value: valueInCondition
   };
+};
+
+// Whether evaluateConditionString will compare as bigints or as strings. A condition value of all
+// digits is numeric; anything else falls back to a string comparison.
+const isNumericConditionValue = (value: string): boolean => /^\d+$/.test(value);
+
+// The settings-time counterpart of parseCondition, with messages naming the option rather than
+// describing the parser's internals.
+const validateConditionOption = (condition: string): void => {
+  const operator = supportedConditionOperators.find((supportedOperator) =>
+    condition.startsWith(supportedOperator)
+  );
+
+  if (!operator) {
+    throw new Error(
+      `option condition must start with one of ${supportedConditionOperators.join(", ")} ` +
+        `(e.g. ">1000"), got "${condition}"`
+    );
+  }
+
+  // Extracted with parseCondition rather than re-parsed here, so the hook can never bless a value the
+  // challenge then reads differently. When these two drifted, "> 1000" validated as numeric and ran as
+  // a String() comparison, which a balance of "99" satisfies.
+  const { value } = parseCondition(condition);
+
+  if (value === "") {
+    throw new Error(
+      `option condition "${condition}" has no value after the "${operator}" operator`
+    );
+  }
+
+  // "=" against a string return value is a legitimate check. Ordering operators are not: a non-numeric
+  // value makes evaluateConditionString compare with String(), so ">100" against a value of "99" would
+  // pass on lexicographic order. That is always a misconfiguration rather than an intent.
+  if (operator !== "=" && !isNumericConditionValue(value)) {
+    throw new Error(
+      `option condition "${condition}" compares with "${operator}" against a non-numeric value ` +
+        `"${value}". Ordering comparisons need an unsigned integer, e.g. ">1000".`
+    );
+  }
 };
 
 const toComparableValue = (
@@ -413,7 +588,7 @@ const evaluateConditionString = (
 ): boolean => {
   const parsedCondition = parseCondition(condition);
 
-  const isNumericCondition = /^\d+$/.test(parsedCondition.value);
+  const isNumericCondition = isNumericConditionValue(parsedCondition.value);
   const conditionValueParsed = toComparableValue(
     parsedCondition.value,
     isNumericCondition
@@ -538,6 +713,81 @@ const parseChallengeAbi = (abi: string): Record<string, unknown> => {
   return obj;
 };
 
+// Semantic validation of the owner's settings, run by pkc-js on every edit, community creation and
+// community start. Core already enforces what optionInputs describes (undeclared keys, missing
+// required options, publicOptions naming an option that does not exist), so everything here is a check
+// only this package can make. Sync and no network on purpose: it runs on every community start, so an
+// RPC reachability check here would turn a provider outage into a startup failure. That check belongs
+// in getChallenge, where an outage costs one publish.
+//
+// Every rejection below currently surfaces as a per-author challenge failure at publish time, which is
+// the wrong audience: the author cannot fix the community's ABI.
+const validateChallengeSettings = ({
+  challengeSettings
+}: {
+  challengeSettings: CommunityChallengeSetting;
+}): void => {
+  const options = challengeSettings.options ?? {};
+  const { chainTicker, address, abi, condition, rpcUrls } = options;
+
+  // Publication is the owner's call for every option but this one. RPC URLs routinely carry a provider
+  // API key in the path (https://eth-mainnet.g.alchemy.com/v2/<KEY>), the published record is public and
+  // permanent, and no client needs them anyway since the community node is what makes the contract call.
+  // A leak with no upside is not a policy choice, so it is refused rather than left to the owner.
+  if (challengeSettings.publicOptions?.includes("rpcUrls")) {
+    throw new Error(
+      "rpcUrls cannot be listed in publicOptions: RPC URLs commonly embed a provider API key, " +
+        "and publishing one exposes it to everyone. Clients never use these endpoints, only the community node does."
+    );
+  }
+
+  for (const url of parseRpcUrls(rpcUrls)) {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      throw new Error(`option rpcUrls contains an entry that is not a valid URL: "${url}"`);
+    }
+
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+      throw new Error(
+        `option rpcUrls entry "${url}" must use http: or https:, got "${parsedUrl.protocol}"`
+      );
+    }
+  }
+
+  // Without a ticker viem has no built-in RPC to fall back on, and every call throws UrlRequiredError
+  // before it is even sent. chainTicker is `required` so core has already rejected a missing one; this
+  // only covers a ticker that is set but not one this package can map to a chain.
+  if (
+    chainTicker !== undefined &&
+    parseRpcUrls(rpcUrls).length === 0 &&
+    !getChainFromTicker(chainTicker)
+  ) {
+    throw new Error(
+      `option rpcUrls is required for chainTicker "${chainTicker}": it has no built-in RPC. ` +
+        `Tickers with a built-in RPC are: ${knownChainTickers.join(", ")}.`
+    );
+  }
+
+  // strict: false because checksum casing is not what makes an address usable here, and an owner who
+  // pastes a lowercased address from a block explorer has not made a mistake worth blocking an edit for.
+  if (address !== undefined && !isAddress(address, { strict: false })) {
+    throw new Error(
+      `option address is not a valid EVM address: "${address}". It must be 0x followed by 40 hex characters.`
+    );
+  }
+
+  // Same parser getChallenge uses, so an ABI accepted here cannot be rejected at challenge time.
+  if (abi !== undefined) {
+    parseChallengeAbi(abi);
+  }
+
+  if (condition !== undefined) {
+    validateConditionOption(condition);
+  }
+};
+
 const getChallenge = async ({
   challengeSettings,
   challengeRequestMessage,
@@ -612,8 +862,24 @@ function evmContractChallenge({
 }): ChallengeFileInput {
   const chainTicker = challengeSettings?.options?.chainTicker;
   const type = `chain/${chainTicker || "eth"}` as ChallengeInput["type"];
-  return { getChallenge, optionInputs, type, description };
+  return {
+    getChallenge,
+    optionInputs,
+    type,
+    description,
+    validateChallengeSettings
+  };
 }
 
-export { description, optionInputs };
+// createViemClient/createEnsViemClient/getChainFromTicker are exported for the tests only: index.ts
+// re-exports just the default and the types, so these are not part of the package's public API.
+export {
+  description,
+  optionInputs,
+  validateChallengeSettings,
+  createViemClient,
+  createEnsViemClient,
+  getChainFromTicker,
+  _clearViemClientCache
+};
 export default evmContractChallenge;
