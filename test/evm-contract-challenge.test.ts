@@ -1,11 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyMessage } from "viem";
+import { mainnet, polygon } from "viem/chains";
 import {
   generatePrivateKey,
   privateKeyToAccount,
   type PrivateKeyAccount
 } from "viem/accounts";
-import evmContractChallenge from "../src/evm-contract-challenge.js";
+import evmContractChallenge, {
+  _clearViemClientCache
+} from "../src/evm-contract-challenge.js";
 import type {
   ChallengeResultInput,
   GetChallengeArgsInput,
@@ -28,11 +31,17 @@ vi.mock("viem", async () => {
   const actual = await vi.importActual<typeof import("viem")>("viem");
   return {
     ...actual,
-    createPublicClient: () => currentMockClient
+    createPublicClient: (args: { chain?: { id: number } }) => {
+      createPublicClientArgs.push(args);
+      return currentMockClient;
+    }
   };
 });
 
 let currentMockClient: MockViemClient;
+// Recorded so the tests can assert on the client viem was asked to build, not just on the mock that
+// comes back. Passing a chain is what gives http() a default RPC and what lets getEnsAddress run.
+const createPublicClientArgs: Array<{ chain?: { id: number } }> = [];
 
 const CONTRACT_ADDRESS =
   "0xEA81DaB2e0EcBc6B5c4172DE4c22B6Ef6E55Bd8f" as const;
@@ -63,8 +72,10 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  // Clear the viem client cache between tests by resetting the mock module
-  vi.resetModules;
+  // Clients are cached per (chainTicker, rpcUrls), so without this every test after the first would
+  // keep the first test's mock client instead of its own.
+  _clearViemClientCache();
+  createPublicClientArgs.length = 0;
 });
 
 const createChallengeSettings = (
@@ -119,13 +130,18 @@ const createPublication = (params: {
   authorAddress?: string;
   wallet?: AuthorWallet;
   avatar?: AuthorAvatar;
+  // The wallet is looked up as author.wallets[chainTicker], so a test using a non-default chainTicker
+  // has to register the wallet under that ticker or the wallet check returns early.
+  walletChainTicker?: string;
 }): PublicationWithCommunityAuthorFromDecryptedChallengeRequest => {
   const authorAddress = params.authorAddress ?? DEFAULT_AUTHOR_ADDRESS;
 
   return {
     author: {
       address: authorAddress,
-      ...(params.wallet ? { wallets: { eth: params.wallet } } : {}),
+      ...(params.wallet
+        ? { wallets: { [params.walletChainTicker ?? "eth"]: params.wallet } }
+        : {}),
       ...(params.avatar ? { avatar: params.avatar } : {})
     },
     signature: { type: "ed25519", signature: "", publicKey: "mock-public-key", signedPropertyNames: [] }
@@ -443,7 +459,7 @@ describe("evmContractChallenge", () => {
     ).rejects.toThrow("Condition uses unsupported comparison operator");
   });
 
-  it("passes when rpcUrls is omitted (uses viem defaults)", async () => {
+  it("passes when rpcUrls is omitted, using the chain's built-in RPC", async () => {
     const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
 
     const mockClient = createClient({
@@ -523,6 +539,115 @@ describe("evmContractChallenge", () => {
     expect((result as { error?: string }).error).toContain(
       "walletFailureReason='The author wallet address's pkc-author-address text record should resolve to the public key of the signature'"
     );
+  });
+
+  it("builds the contract-call client with the chain the chainTicker names", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    await executeChallenge({
+      publication: createPublication({ wallet, walletChainTicker: "matic" }),
+      mockClient: createClient({
+        verifyMessage,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ chainTicker: "matic" })
+    });
+
+    // Without a chain, viem's http() has no default RPC and throws UrlRequiredError at construction.
+    expect(createPublicClientArgs.length).toBeGreaterThan(0);
+    for (const args of createPublicClientArgs) {
+      expect(args.chain?.id).toBe(polygon.id);
+    }
+  });
+
+  it("resolves ENS against mainnet even when the contract call targets another chain", async () => {
+    await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => account.address,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      }),
+      settings: createChallengeSettings({ chainTicker: "matic" })
+    });
+
+    // ENS only exists on Ethereum mainnet, and viem refuses the lookup outright without a chain
+    // ("client chain not configured. universalResolverAddress is required").
+    expect(createPublicClientArgs.map((args) => args.chain?.id)).toContain(mainnet.id);
+  });
+
+  it("falls through to the NFT check when the ENS lookup throws", async () => {
+    const avatar = await signAvatarProof({ authorAddress: "plebbit.eth" });
+
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth", avatar }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => {
+          throw new Error("ENS provider is down");
+        },
+        readContract: async () => account.address,
+        call: async () => ({ data: HIGH_BALANCE_DATA })
+      })
+    });
+
+    // A throwing ENS lookup used to propagate out of getChallenge, so the NFT check below it never ran
+    // and the author got an exception instead of a challenge result.
+    expect(result).toEqual({ success: true });
+  });
+
+  it("reports a failed ENS lookup as a challenge failure, not an exception", async () => {
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => {
+          throw new Error("ENS provider is down");
+        },
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "ensAuthorAddressFailureReason='Failed to resolve ENS address of author.address: ENS provider is down'"
+    );
+  });
+
+  it("reports an unresolvable ENS name as a challenge failure", async () => {
+    const result = await executeChallenge({
+      publication: createPublication({ authorAddress: "plebbit.eth" }),
+      mockClient: createClient({
+        verifyMessage,
+        getEnsAddress: async () => null,
+        call: async () => ({ data: ZERO_BALANCE_DATA })
+      })
+    });
+
+    expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toContain(
+      "ensAuthorAddressFailureReason='Failed to get owner of ENS address of author.address'"
+    );
+  });
+
+  it("throws a message naming rpcUrls when the chainTicker has no built-in RPC", async () => {
+    const wallet = await signWalletProof({ authorAddress: DEFAULT_AUTHOR_ADDRESS });
+
+    const { rpcUrls: _unused, ...optionsWithoutRpcUrls } = DEFAULT_OPTIONS;
+
+    await expect(
+      executeChallenge({
+        publication: createPublication({
+          wallet,
+          walletChainTicker: "notachain"
+        }),
+        mockClient: createClient({ verifyMessage }),
+        settings: {
+          name: "@bitsocial/evm-contract-challenge",
+          options: { ...optionsWithoutRpcUrls, chainTicker: "notachain" }
+        }
+      })
+    ).rejects.toThrow(/option rpcUrls is required for chainTicker "notachain"/);
   });
 
   describe("ABI validation", () => {
