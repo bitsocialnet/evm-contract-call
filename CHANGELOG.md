@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.6...v0.1.7) (2026-09-03)
+
+### Bug Fixes
+
+* **deps:** remediate Dependabot alerts [skip github-alerts] ([45c28fe](https://github.com/bitsocialnet/evm-contract-challenge/commit/45c28fe9f050a97bd7446267a363cbe8c7614b79))
+
 ## [0.1.6](https://github.com/bitsocialnet/evm-contract-challenge/compare/v0.1.5...v0.1.6) (2026-08-21)
 
 ### Bug Fixes
